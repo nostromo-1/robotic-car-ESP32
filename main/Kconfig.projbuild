@@ -1,0 +1,38 @@
+menu "Robot Car"
+
+    config REMOTE_ONLY
+        bool "Remote only"
+        default y
+        help
+            When enabled, the robot car will not work without the wiimote.
+            It will not try to avoid obstacles on its own.
+            
+    config USE_ENCODER
+        bool "Use encoder"
+        default n
+        help
+            When enabled, the robot car will use the encoders in the DC motor.
+            It will then try to maintain a straight line, even if both motors have slightly different speeds.
+            Activate it only if the car is 2 wheel and the motor is a DFRobot FIT0450 with encoder.
+
+     config SOFT_TURN
+        bool "Soft turn"
+        default n
+        help
+            When enabled, the robot car will rotate by stopping one of the wheels.
+            If disabled, it will rotate by reversing one of the wheels.
+            Activate it only if the car is 2 wheel.
+            
+     config CHECK_BATTERY
+        bool "Check battery"
+        default y
+        help
+            When enabled, the robot car will periodically check the battery status and shutdown if too low.
+
+     config CALIBRATE_IMU
+        bool "Calibrate IMU"
+        default n
+        help
+            When enabled, the IMU will be calibrated when the car is started.
+            
+endmenu
