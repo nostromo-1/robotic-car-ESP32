@@ -1,4 +1,4 @@
-# robotic-car-ESP
+# robotic-car-ESP32
 Project of a robotic car with an ESP32 as control unit. It is equivalent to the Raspberry Pi version.
 
 This project is about building a hobby robotic car.
