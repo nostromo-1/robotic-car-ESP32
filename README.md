@@ -37,7 +37,7 @@ The following parts are needed to build it:
 * Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the Pi comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
 
 ## Software
-The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.1 version. Please refer to he [installation instructions](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/).
+The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.1 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/).
 
 After installing the environment and copying the source files, run `idf.py build` followed by `idf.py flash`.
 
