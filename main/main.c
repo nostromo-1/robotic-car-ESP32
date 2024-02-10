@@ -277,7 +277,7 @@ TaskHandle_t xHandle = NULL;
      &xHandle, 
      RUNNING_CORE);
    configASSERT(xHandle);
-  
+
    
    xTaskCreatePinnedToCore(
      TaskWiimote,
@@ -289,7 +289,7 @@ TaskHandle_t xHandle = NULL;
      RUNNING_CORE);
    configASSERT(xHandle);
    mando.taskHandle = xHandle;
- 
+
  
    xTaskCreatePinnedToCore(
      TaskUltrasonic,
@@ -311,7 +311,7 @@ TaskHandle_t xHandle = NULL;
      &xHandle, 
      RUNNING_CORE);
    configASSERT(xHandle);   
-   
+
    
    xTaskCreatePinnedToCore(
      TaskPita,
@@ -323,7 +323,7 @@ TaskHandle_t xHandle = NULL;
      RUNNING_CORE);
    configASSERT(xHandle); 
    bocina.xHandle = xHandle;
-   
+
    
    xTaskCreatePinnedToCore(
      TaskPlayWav,
@@ -380,6 +380,7 @@ static void i2c_master_init()
    ESP_ERROR_CHECK(i2c_param_config(I2C1_NUM, &conf1));
    ESP_ERROR_CHECK(i2c_driver_install(I2C1_NUM, conf1.mode, 0, 0, 0));  
 
+   /*
    // Scan I2C buses
    for (int bus=0; bus<=1; bus++) {
       printf("i2c%i scan: \n", bus);
@@ -389,12 +390,13 @@ static void i2c_master_init()
          i2c_master_start(cmd);
          i2c_master_write_byte(cmd, (i << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
          i2c_master_stop(cmd);
-         ret = i2c_master_cmd_begin((bus==0)?I2C0_NUM:I2C1_NUM, cmd, I2C_TIMEOUT  / portTICK_PERIOD_MS);
+         ret = i2c_master_cmd_begin((bus==0)?I2C0_NUM:I2C1_NUM, cmd, I2C_TIMEOUT / portTICK_PERIOD_MS);
          i2c_cmd_link_delete(cmd);
     
          if (ret == ESP_OK) printf("Found device at: 0x%2x\n", i);
       }
-   }   
+   }
+   */
 }
 
 
@@ -540,6 +542,7 @@ int setup(void)
    if (setupPCF8591(PCF8591_I2C)) return 1;
    oledSetInversion(true);   // Fill display, as life sign
 
+   // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
    if (wav_queue == NULL) return 1;
 
@@ -566,7 +569,7 @@ int setup(void)
    /* Re-scan button; button pressed gives a 0 */
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
-   //gpioGlitchFilter(WMSCAN_PIN, 100000);      // 0,1 sec filter
+
    if (setupWiimote()) return 1;
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
@@ -580,31 +583,18 @@ int setup(void)
 }
 
 
-
-void app_main(void)
+void check_chip(void)
 {
-   esp_chip_info_t chip_info;
-   WiimoteButton_t buttons;  
-   float volts;
-   int rc;
- 
+esp_chip_info_t chip_info;
+
    /* Check chip info */
    esp_chip_info(&chip_info);
    if (!(chip_info.features & CHIP_FEATURE_BT)) {
-      printf("Bluetooth system not present. Shutting down\n");
+      ESP_LOGE(TAG, "Bluetooth system not present. Shutting down");
       esp_deep_sleep_start();   // Shutdown chip; call abort()?
    }
-   printf("Number of cores=%u\n", chip_info.cores);
-   printf("Hello world from CPU %d\n", xPortGetCoreID());
-   printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
-   printf("Port tick period=%lu ms\n", portTICK_PERIOD_MS);
-   printf("Max malloc memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-   printf("Max malloc memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-   printf("Minimum free heap size=%"PRIu32" bytes\n", esp_get_minimum_free_heap_size());
-   printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
-   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-   esp_sleep_config_gpio_isolate();
-   
+   //printf("Number of cores=%u\n", chip_info.cores);  
+      
    /* Mount filesystem */
    esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
@@ -612,6 +602,7 @@ void app_main(void)
         .max_files = 3,
         .format_if_mount_failed = false
    };
+   
    esp_err_t ret = esp_vfs_spiffs_register(&conf);
    if (ret != ESP_OK) {
       if (ret == ESP_FAIL) {
@@ -622,31 +613,49 @@ void app_main(void)
           ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
        }
       esp_deep_sleep_start();  // Or asm("break 1, 1");
-   }  
+   }
+   
+   esp_wifi_stop(); 
+}
+
+
+void app_main(void)
+{
+   printf("Hello world from CPU %d\n", xPortGetCoreID());
+   printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
+   printf("Port tick period=%lu ms\n", portTICK_PERIOD_MS);
+   printf("Max malloc memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+   printf("Max malloc memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+   printf("Minimum free heap size=%"PRIu32" bytes\n", esp_get_minimum_free_heap_size());
+   printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
+   
+   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+   esp_sleep_config_gpio_isolate();
+   check_chip();
    
    /* Initial setup */
    xMainTask = xTaskGetCurrentTaskHandle();
-   rc = setup();
-   if (rc) {
-       fprintf(stderr, "Error al inicializar. Coche no arranca!\n");
+   if (setup()) {
+       ESP_LOGE(TAG, "Error al inicializar. Coche no arranca!");
        oledBigMessage(1, "SHUTDOWN");
        esp_deep_sleep_start();   // Shutdown chip
    }
-   
-   esp_wifi_stop();   
+     
    startTasks();
-
+   vTaskDelay(pdMS_TO_TICKS(100)); // Wait for tasks to activate
    ESP32Wiimote_setPlayerLEDs(LEDs[velocidadCoche/26]);
-   oledBigMessage(0, " Ready  ");
-   audioplay("/spiffs/ready.wav", 1);
-   oledBigMessage(0, NULL);
  
    // Check if battery low; -1 means that the ADC does not work correctly
-   volts = getMainVoltageValue();  
+   float volts = getMainVoltageValue();  
    if (checkBattery && volts>=0 && volts<6.6) {
       oledBigMessage(0, "Battery!");
-      audioplay("spiffs/batterylow.wav", 1);
+      audioplay("/spiffs/batterylow.wav", 1);
       oledBigMessage(0, NULL);           
+   }
+   else {
+      oledBigMessage(0, " Ready  ");
+      audioplay("/spiffs/ready.wav", 1);
+      oledBigMessage(0, NULL);      
    }
 
    /* 
@@ -654,6 +663,8 @@ void app_main(void)
       After awakening, it solves the problem, and goes back to sleep.
    */
    for (;;) {
+      WiimoteButton_t buttons;  
+      
       WRITE_ATOMIC(esquivando, false);  // Signal to sonarEcho that the semaphore can be activated: car is not 'esquivando' 
       /* Sleep until semaphore awakens us; it will happen in 3 cases:
       either the distance to an obstacle is below the threshold, or the car is stalled, or there was a collision */
@@ -695,7 +706,7 @@ void TaskUltrasonic(void *pvParameters)
 {
 TickType_t xDelay = (TickType_t)pvParameters;
 TickType_t xWakeTime, extraDelay = 0;
-int64_t tick, referenceTick=0;
+int64_t tick, referenceTick = 0;
 uint32_t stalledTime;
 const uint32_t maxStalledTime = 1200*1e3;  // Time in microseconds to flag car as stopped (it does not change its distance)
 static uint32_t distance_array[NUMPOS], pos_array;
@@ -704,7 +715,7 @@ static int32_t previous_distance, reference_distance;
 static const char displayText[] = "Dist (cm):";
 int32_t suma, distance_local;
 char str[6];
-bool in_collision, is_stalled;
+bool is_stalled;
 
     printf("TaskUltrasonic from CPU %d\n", xPortGetCoreID());
     //  esp_rom_delay_us(100);  consider using this in future implementation
@@ -724,19 +735,6 @@ bool in_collision, is_stalled;
         esp_err_t res = ultrasonic_measure_cm(&sonarHCSR04, MAX_DISTANCE_CM, &dist);
         if (res != ESP_OK) {
             ESP_LOGE(TAG, "%s: ultrasonic_measure_cm failed", __func__);
-            switch (res) {
-                case ESP_ERR_ULTRASONIC_PING:
-                    ESP_LOGE(TAG, "Cannot ping (device is in invalid state)\n");
-                    break;
-                case ESP_ERR_ULTRASONIC_PING_TIMEOUT:
-                    ESP_LOGE(TAG, "Ping timeout (no device found)\n");
-                    break;
-                case ESP_ERR_ULTRASONIC_ECHO_TIMEOUT:
-                    ESP_LOGE(TAG, "Echo timeout (i.e. distance too big)\n");
-                    break;
-                default:
-                    ESP_LOGE(TAG, "%s\n", esp_err_to_name(res));
-            }
             continue;
         }
        
@@ -794,8 +792,7 @@ bool in_collision, is_stalled;
            or the car has crashed into something
         */
         if (!remoteOnly && !READ_ATOMIC(scanningWiimote) && !READ_ATOMIC(esquivando)) {
-            in_collision = READ_ATOMIC(collision);
-            if (distance_local < DISTMIN || is_stalled || in_collision) {
+            if (distance_local < DISTMIN || is_stalled || READ_ATOMIC(collision)) {
                WRITE_ATOMIC(esquivando, true);  // Set global variable
                xTaskNotifyGive(xMainTask);      // Awake main loop
             }
