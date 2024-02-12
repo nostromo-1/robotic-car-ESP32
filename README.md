@@ -27,12 +27,12 @@ The following parts are needed to build it:
 * Car chasis. For example, https://leantec.es/tienda/chasis-robot-4wd-chasis-robot-de-4-ruedas/ or https://leantec.es/tienda/chassis-2wd-smart-car-chassis-arduino-robot/
 * 6V DC motors. If 4WD: 4 motors. If 2WD, then 2 motors (in that case, I use motors with a wheel Hall encoder, [DFRobot FIT0450](https://www.dfrobot.com/product-1457.html), in order to make the car run in a straight line using a PID control loop)
 * Motor controller: a L298N based circuit board, like https://www.electrohobby.es/driver-dc/209-driver-motor-l298n.html
-* Distance sensor HC-SR04
+* Ultrasonic distance sensor HC-SR04
 * Display module SSD1306
-* An inertial module based on LSM9DS1 (controlled via I2C), like https://learn.adafruit.com/adafruit-lsm9ds1-accelerometer-plus-gyro-plus-magnetometer-9-dof-breakout
-* An ESP32 board, like [this](https://www.mouser.es/ProductDetail/Espressif-Systems/ESP32-DevKitC-32E?qs=GedFDFLaBXFpgD0kAZWDrQ%3D%3D). It needs Bluetooth classic, so it must be the ESP32 (and not one of the variants). The WROOM module is enough, with 4M flash and no PSRAM.
-* Transistors, capacitors, resistors, push button and LED for voltage checker and scan button. A 6V buzzer. See the schematics directory.
-* For the audio amplifier: a LM386 integrated circuit, an 8 ohm small speaker and some resistors and capacitors. See the schematics. The audio signal is taken from the GPIO using the internal DAC, so an analogue amplifier is enough.
+* An inertial module unit based on LSM9DS1 (controlled via I2C), like https://learn.adafruit.com/adafruit-lsm9ds1-accelerometer-plus-gyro-plus-magnetometer-9-dof-breakout
+* An ESP32 development board, like [this](https://www.mouser.es/ProductDetail/Espressif-Systems/ESP32-DevKitC-32E?qs=GedFDFLaBXFpgD0kAZWDrQ%3D%3D). It needs Bluetooth classic, so it must be the ESP32 (and not one of the variants). The WROOM module is enough, with 4M flash and no PSRAM.
+* Transistors, capacitors, resistors, and scan button. A 6V buzzer. See the schematics directory.
+* For the audio amplifier: a LM386 integrated circuit, an 8 ohm small speaker and some resistors and capacitors. See the schematics. The audio signal is taken from the GPIO using the internal DAC, so an analogue amplifier is enough. Alternatively, you can use another amplifier like one based on [TPA2005D1](https://www.sparkfun.com/products/11044).
 * For the battery status monitor: a PCF8591.
 * Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the Pi comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
 
