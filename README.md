@@ -24,9 +24,9 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 
 ## Parts
 The following parts are needed to build it:
-* Car chasis. For example, http://www.leantec.es/robotica/59-kit-robot-de-4-ruedas-con-ultrasonido.html
+* Car chasis. For example, https://leantec.es/tienda/chasis-robot-4wd-chasis-robot-de-4-ruedas/ or https://leantec.es/tienda/chassis-2wd-smart-car-chassis-arduino-robot/
 * 6V DC motors. If 4WD: 4 motors. If 2WD, then 2 motors (in that case, I use motors with a wheel Hall encoder, [DFRobot FIT0450](https://www.dfrobot.com/product-1457.html), in order to make the car run in a straight line using a PID control loop)
-* Motor controller: a L298N based circuit board, like http://www.leantec.es/motores-y-controladores/82-l298-controlador-de-motores-con-doble-puente-h.html
+* Motor controller: a L298N based circuit board, like https://www.electrohobby.es/driver-dc/209-driver-motor-l298n.html
 * Distance sensor HC-SR04
 * Display module SSD1306
 * An inertial module based on LSM9DS1 (controlled via I2C), like https://learn.adafruit.com/adafruit-lsm9ds1-accelerometer-plus-gyro-plus-magnetometer-9-dof-breakout
