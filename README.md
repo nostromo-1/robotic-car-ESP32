@@ -41,4 +41,9 @@ The robot is programmed in C using the Espressif environment (not Arduino). It i
 
 After installing the environment and copying the source files, run `idf.py build` followed by `idf.py flash`.
 
+## Operation
+Switch on power on the car. The text "Scan..." will appear on the display. Then, press buttons '1' and '2' on the wiimote. The car will find the wiimote and attach to it. 
+
+Now, you can control the car: press 'A' to move forward.
+
 
