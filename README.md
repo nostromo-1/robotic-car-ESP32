@@ -34,7 +34,7 @@ The following parts are needed to build it:
 * Transistors, capacitors, resistors, and scan button. A 6V buzzer. See the schematics directory.
 * For the audio amplifier: a LM386 integrated circuit, an 8 ohm small speaker and some resistors and capacitors. See the schematics. The audio signal is taken from the GPIO using the internal DAC, so an analogue amplifier is enough. Alternatively, you can use another amplifier like one based on [TPA2005D1](https://www.sparkfun.com/products/11044).
 * For the battery status monitor: a PCF8591.
-* Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the Pi comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
+* Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the ESP32 board comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
 
 ## Software
 The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.1 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/).
