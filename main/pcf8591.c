@@ -125,9 +125,9 @@ static char str_old[17];
 static int n, old_step = -1;
 static const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered
 static uint32_t underVoltageTime = 0;
+static int64_t previousTick;
 esp_err_t ret;
 int64_t tick;
-static int64_t previousTick;
 
    tick = esp_timer_get_time();
    if (previousTick == 0) previousTick = tick;  // Only first time
@@ -163,14 +163,14 @@ static int64_t previousTick;
    battery_glyph[5] = battery_glyph[2];     
     
    // If battery state changed, update battery symbol on display
-   if (step!=old_step) {    
+   if (step != old_step) {    
       oledSetBitmap8x8(14*8, 0, battery_glyph);  
       old_step = step;
    }
    
    // Symbol blinks when battery low
-   if (step<=64) { 
-      if (n++&1) oledSetBitmap8x8(14*8, 0, NULL);
+   if (step <= 64) { 
+      if (n++ & 1) oledSetBitmap8x8(14*8, 0, NULL);
       else oledSetBitmap8x8(14*8, 0, battery_glyph);
    }
     
@@ -187,7 +187,6 @@ static int64_t previousTick;
    if (underVoltageTime >= maxUndervoltageTime) {  
       oledBigMessage(0, "Battery!");   
       oledBigMessage(1, "SHUTDOWN");
-      //closedown();
       esp_deep_sleep_start();   // Shutdown chip
    }
    

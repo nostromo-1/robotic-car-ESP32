@@ -100,7 +100,7 @@ Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and
 #define PITO_PIN   27
 #define WMSCAN_PIN 15
 #define AUDR_PIN   25  // DAC channel 0 in ESP32
-#define AMPLI_PIN  17
+#define AMPLI_PIN  13
 #define LSENSOR_PIN 36
 #define RSENSOR_PIN 39
 #define KARR_PIN    12
