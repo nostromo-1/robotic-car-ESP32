@@ -17,11 +17,13 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "esp_timer.h"
 #include "esp_spiffs.h"
 #include "esp_rom_sys.h"
+#include "esp32/rom/ets_sys.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "driver/ledc.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "esp_psram.h"
 
 
 #include "wiimote.h"
@@ -85,25 +87,25 @@ ADC2: ADC2 pins cannot be used when Wi-Fi is used. So, if you are having trouble
 you may consider using an ADC1 GPIO instead, which should solve your problem. 
 Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and Bluetooth with sleep mode enabled.
 */
-    
-#define MI_ENA_PIN 4
-#define MI_IN1_PIN 18
-#define MI_IN2_PIN 5
 
-#define MD_ENA_PIN 26
-#define MD_IN1_PIN 32
-#define MD_IN2_PIN 33
+#define MI_ENA_PIN 26
+#define MI_IN1_PIN 32
+#define MI_IN2_PIN 33
+    
+#define MD_ENA_PIN 4
+#define MD_IN1_PIN 18
+#define MD_IN2_PIN 5
 
 #define SONAR_TRIGGER_PIN 14
 #define SONAR_ECHO_PIN    35
 
-#define PITO_PIN   27
+#define PITO_PIN   12  // This pin remains low when deep sleep
 #define WMSCAN_PIN 15
 #define AUDR_PIN   25  // DAC channel 0 in ESP32
 #define AMPLI_PIN  13
 #define LSENSOR_PIN 36
 #define RSENSOR_PIN 39
-#define KARR_PIN    12
+#define KARR_PIN    27
 
 
 /***************** Define constants and parameters ****************/
@@ -244,6 +246,7 @@ Motor_t m_dcho = {
 
 /* Forward declarations of internal functions of this module */
 void TaskBlink(void *pvParameters);
+void TaskKarr(void *pvParameters);
 void TaskWiimote(void *pvParameters);
 void TaskUltrasonic(void *pvParameters);
 void TaskCheckPower(void *pvParameters);
@@ -278,6 +281,15 @@ TaskHandle_t xHandle = NULL;
      RUNNING_CORE);
    configASSERT(xHandle);
 
+   xTaskCreatePinnedToCore(
+     TaskKarr,
+     "TaskKarr",    // A name just for humans
+     STACK_SIZE,    // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
+     (void*)KARRDELAY,   // Task parameter: period in ms to blink
+     tskIDLE_PRIORITY,   // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
+     &xHandle, 
+     RUNNING_CORE);
+   configASSERT(xHandle);
    
    xTaskCreatePinnedToCore(
      TaskWiimote,
@@ -380,7 +392,7 @@ static void i2c_master_init()
    ESP_ERROR_CHECK(i2c_param_config(I2C1_NUM, &conf1));
    ESP_ERROR_CHECK(i2c_driver_install(I2C1_NUM, conf1.mode, 0, 0, 0));  
 
-   /*
+   
    // Scan I2C buses
    for (int bus=0; bus<=1; bus++) {
       printf("i2c%i scan: \n", bus);
@@ -396,7 +408,7 @@ static void i2c_master_init()
          if (ret == ESP_OK) printf("Found device at: 0x%2x\n", i);
       }
    }
-   */
+   
 }
 
 
@@ -552,7 +564,7 @@ int setup(void)
    
    /* bocina */
    gpio_reset_pin(bocina.pin);
-   gpio_pullup_dis(bocina.pin);  // Otherwise the pull-up resistor can enable the buzzer when in sleep mode (and GPIO disconnected)
+   gpio_set_pull_mode(bocina.pin, GPIO_PULLDOWN_ONLY);
    gpio_set_direction(bocina.pin, GPIO_MODE_OUTPUT);
    gpio_set_level(bocina.pin, 0);
    bocina.mutex = xSemaphoreCreateMutex();
@@ -573,8 +585,7 @@ int setup(void)
    if (setupWiimote()) return 1;
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
-
-   //setupKarr();  // start KARR scanner effect
+   
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -591,7 +602,7 @@ esp_chip_info_t chip_info;
    esp_chip_info(&chip_info);
    if (!(chip_info.features & CHIP_FEATURE_BT)) {
       ESP_LOGE(TAG, "Bluetooth system not present. Shutting down");
-      esp_deep_sleep_start();   // Shutdown chip; call abort()?
+      esp_deep_sleep_start();   // Shutdown chip
    }
    //printf("Number of cores=%u\n", chip_info.cores);  
       
@@ -612,7 +623,7 @@ esp_chip_info_t chip_info;
        } else {
           ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
        }
-      esp_deep_sleep_start();  // Or asm("break 1, 1");
+      esp_deep_sleep_start();   // Or asm("break 1, 1");
    }
    
    esp_wifi_stop(); 
@@ -624,11 +635,15 @@ void app_main(void)
    printf("Hello world from CPU %d\n", xPortGetCoreID());
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
    printf("Port tick period=%lu ms\n", portTICK_PERIOD_MS);
-   printf("Max malloc memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-   printf("Max malloc memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-   printf("Minimum free heap size=%"PRIu32" bytes\n", esp_get_minimum_free_heap_size());
    printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
+   printf("Max internal memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+   printf("Max internal memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
    
+   size_t psram_size = esp_psram_get_size();
+   printf("PSRAM size=%d bytes\n", psram_size);
+   printf("Max mapped PSRAM memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+   printf("Max malloc memory (buggy!)=%u\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+      
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
    esp_sleep_config_gpio_isolate();
    check_chip();
@@ -674,15 +689,20 @@ void app_main(void)
       );
       
       buttons = READ_ATOMIC(mando.buttons);
-      if (mando.wiimote && ~buttons&BUTTON_A) continue;  // Take action only if A is pressed
+      //if (mando.wiimote && ~buttons&BUTTON_A) continue;  // Take action only if A is pressed
+      if (mando.wiimote && ~buttons&BUTTON_A) {
+         ajustaCocheConMando(buttons);
+         continue;
+      }
       
-      oledBigMessage(0, "OBSTACLE"); 
       if (READ_ATOMIC(collision) || READ_ATOMIC(stalled)) {
          //printf("Collision/stall!\n");
+         oledBigMessage(0, "STALLED"); 
          retreatBackwards(); 
       }
       else {
          //printf("Esquivando...\n");
+         oledBigMessage(0, "OBSTACLE"); 
          avoidObstacle();  // Distance is below threshold  
       } 
       
@@ -822,6 +842,26 @@ TickType_t xDelay = (TickType_t)pvParameters;
   }
 }
 
+
+/*
+  KARR effect
+  Thread in charge of sending a clock pulse to the circuit implementing the KARR scan effect.
+  At each LH transition, the led will change 
+*/
+void TaskKarr(void *pvParameters)  
+{
+TickType_t xDelay = (TickType_t)pvParameters;
+   
+   gpio_reset_pin(KARR_PIN);  
+   gpio_set_direction(KARR_PIN, GPIO_MODE_OUTPUT);  
+   
+   for (;;) { // A Task shall never return or exit
+      gpio_set_level(KARR_PIN, 1);
+      ets_delay_us(100);  // set high state for clock during 100 us 
+      gpio_set_level(KARR_PIN, 0);
+      vTaskDelay(pdMS_TO_TICKS(xDelay));
+  }
+}
 
 
 
