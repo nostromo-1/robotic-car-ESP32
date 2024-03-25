@@ -38,7 +38,6 @@ static int oledWriteCommand(uint8_t);
 static int oledWriteCommand2(uint8_t c, uint8_t d);
 static int oledSetPosition(int x, int y);
 static int oledWriteDataBlock(const uint8_t *ucBuf, int iLen);
-static void RotateFont90(void);
 
 
 // Opens a handle to the I2C device using pigpio library
@@ -59,7 +58,7 @@ uint8_t initbuf[]={0x00,0xae,0xa8,0x3f,0xd3,0x00,0x40,0xa0,0xa1,0xc0,0xc8,
     oledFill(0x00);    // Set display memory to zero   
     oledWriteCommand(0xAF);  // turn on OLED
     oledSetContrast(128);
-    RotateFont90();     // fix font orientation for OLED
+    //RotateFont90();     // fix font orientation for OLED
     return 0;  
 
    // error handling if read operation from I2C bus failed
@@ -313,6 +312,10 @@ int oledSetBitmap8x8(int x, int y, const uint8_t* graph)
 
 
 
+/*
+This code is no longer used. Instead, the ucFont array now contains the rotated characters.
+This way, the array can be loaded in flash memory and does not use RAM
+
 
 // Fix the orientation of the font image data, defined in fonts.c
 static void RotateFont90(void)
@@ -359,5 +362,6 @@ uint8_t c, c2, ucMask, *s, *d;
 		memcpy(&ucFont[9728 + (i*64)], ucTemp, 64);
 	}
 } 
+*/
 
 
