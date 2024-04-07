@@ -14,8 +14,8 @@ Based on code written by Larry Bank (bitbank@pobox.com)
 #include "oled96.h"
 #include "fonts.h"
 
-#define I2C_BUS                 I2C_NUM_0   // i2c bus of display
-#define I2C_MASTER_TIMEOUT_MS   100
+#define I2C_BUS                 I2C_NUM_0    // I2C bus of display
+#define I2C_MASTER_TIMEOUT_MS   150          // 100 ms creates problemas (timeout) with IMU
 #define ACK_CHECK_EN            0x1          /* I2C master will check ack from slave*/
 #define ACK_CHECK_DIS           0x0          /* I2C master will not check ack from slave */
 #define ACK_VAL                 0x0          /* I2C ack value */
@@ -100,8 +100,8 @@ uint8_t buf[4];
 esp_err_t rc;
 
    if (y<0 || y>7 || x<0 || x>127) ERR(-1, "Invalid coordinates in display");
-   buf[0] = 0;         // 0x00 is the command introducer
-   buf[1] = 0xb0 | y;  // go to page Y
+   buf[0] = 0x00;      // 0x00 is the command introducer
+   buf[1] = 0xB0 | y;  // go to page Y
    buf[2] = 0x00 | (x & 0x0f);   // lower col addr
    buf[3] = 0x10 | (x >> 4);     // upper col addr
    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
@@ -154,35 +154,25 @@ rw_error:
 static int oledWriteCommand(uint8_t c)
 {
 esp_err_t rc;
-    
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (displayAddr << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-    i2c_master_write_byte(cmd, 0x00, ACK_VAL);  // 0x00 is the command introducer
-    i2c_master_write_byte(cmd, c, ACK_VAL);
-    i2c_master_stop(cmd);
-    rc = i2c_master_cmd_begin(I2C_BUS, cmd, I2C_MASTER_TIMEOUT_MS  / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);    
-        
+uint8_t buf[2];
+
+    buf[0] = 0x00;  // 0x00 is the command introducer
+    buf[1] = c;
+    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);   
     if (rc != ESP_OK) ERR(-1, "Error writing to display"); 
     return 0;
 }
 
-
+// Send a two byte command to the OLED controller
 static int oledWriteCommand2(uint8_t c, uint8_t d)
 {
 esp_err_t rc;
-    
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (displayAddr << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-    i2c_master_write_byte(cmd, 0x00, ACK_VAL);  // 0x00 is the command introducer
-    i2c_master_write_byte(cmd, c, ACK_VAL);
-    i2c_master_write_byte(cmd, d, ACK_VAL);
-    i2c_master_stop(cmd);
-    rc = i2c_master_cmd_begin(I2C_BUS, cmd, I2C_MASTER_TIMEOUT_MS  / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);    
-        
+uint8_t buf[3];
+
+    buf[0] = 0x00;  // 0x00 is the command introducer
+    buf[1] = c;
+    buf[2] = d;
+    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);     
     if (rc != ESP_OK) ERR(-1, "Error writing to display"); 
     return 0;    
 } 
