@@ -31,6 +31,7 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "ultrasonic.h"
 #include "pcf8591.h"
 #include "sound.h"
+#include "imu.h"
 
 
 /************ Define system values *********************/
@@ -72,7 +73,8 @@ This is a ESP32 port of the original Raspberry Pi project.
 /***************** I2C bus addresses ****************/
 #define PCF8591_I2C 0x48           /* Dirección i2c del PCF8591 (AD/DA converter) */
 #define DISPLAY_I2C 0x3C           /* Dirección i2c del display SSD1306 */
-
+#define LSM9DS1_GYR_ACEL_I2C 0x6B  /* Dirección i2c del módulo acelerómetro/giroscopio del IMU LSM9DS1 */
+#define LSM9DS1_MAG_I2C 0x1E       /* Dirección i2c del módulo magnetómetro del IMU LSM9DS1 */
 
 
 /************ Define pin numbers *********************/
@@ -253,6 +255,7 @@ void TaskCheckPower(void *pvParameters);
 void TaskSpeedControl(void *pvParameters);
 void TaskPita(void *pvParameters);
 void TaskPlayWav(void *pvParameters);
+void TaskIMURead(void *pvParameters);
 
 static void wiiCallback(void);
 static void ajustaCocheConMando(WiimoteButton_t buttons);
@@ -305,14 +308,25 @@ TaskHandle_t xHandle = NULL;
  
    xTaskCreatePinnedToCore(
      TaskUltrasonic,
-     "TaskUltrasonic",   // A name just for humans
-     STACK_SIZE,     // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
+     "TaskUltrasonic",    // A name just for humans
+     STACK_SIZE,          // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
      (void*)SONARDELAY,   // Task parameter: period in ms to check sonar
      tskIDLE_PRIORITY+3,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
      &xHandle, 
      PRO_CORE);  // Use CPU0, in order to avoid delays caused by eg interrupts when pressing buttons
    configASSERT(xHandle);
 
+   
+   xTaskCreatePinnedToCore(
+     TaskIMURead,
+     "TaskIMURead",            // A name just for humans
+     STACK_SIZE+STACK_SIZE/2,  // Needs a bigger stack
+     (void*)NULL,         // Task parameter
+     tskIDLE_PRIORITY+3,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
+     &xHandle, 
+     RUNNING_CORE);
+   configASSERT(xHandle);    
+   
    
    xTaskCreatePinnedToCore(
      TaskCheckPower,
@@ -327,9 +341,9 @@ TaskHandle_t xHandle = NULL;
    
    xTaskCreatePinnedToCore(
      TaskPita,
-     "TaskPita",     // A name just for humans
-     STACK_SIZE,     // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
-     (void*)NULL,    // Task parameter: NULL
+     "TaskPita",          // A name just for humans
+     STACK_SIZE,          // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
+     (void*)NULL,         // Task parameter: NULL
      tskIDLE_PRIORITY+1,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
      &xHandle, 
      RUNNING_CORE);
@@ -351,9 +365,9 @@ TaskHandle_t xHandle = NULL;
    if (useEncoder) {
       xTaskCreatePinnedToCore(
          TaskSpeedControl,
-         "TaskSpeedControl",   // A name just for humans
-         STACK_SIZE,     // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
-         (void*)100,     // Task parameter: period in ms to check motor speed
+         "TaskSpeedControl",  // A name just for humans
+         STACK_SIZE,          // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
+         (void*)100,          // Task parameter: period in ms to check motor speed
          tskIDLE_PRIORITY+2,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
          &xHandle, 
          RUNNING_CORE);
@@ -573,10 +587,8 @@ int setup(void)
    if (setupMotor(&m_izdo)) return 1;
    if (setupMotor(&m_dcho)) return 1;
    
-   /*
-   setupBMP280(BMP280_I2C, TIMER4);  // Setup temperature/pressure sensor
-   setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, calibrateIMU, TIMER3);   // Setup IMU
-   */
+   
+   //setupBMP280(BMP280_I2C, TIMER4);  // Setup temperature/pressure sensor
    
    /* Re-scan button; button pressed gives a 0 */
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
@@ -594,7 +606,7 @@ int setup(void)
 }
 
 
-void check_chip(void)
+void init_CPU(void)
 {
 esp_chip_info_t chip_info;
 
@@ -602,7 +614,7 @@ esp_chip_info_t chip_info;
    esp_chip_info(&chip_info);
    if (!(chip_info.features & CHIP_FEATURE_BT)) {
       ESP_LOGE(TAG, "Bluetooth system not present. Shutting down");
-      esp_deep_sleep_start();   // Shutdown chip
+      esp_system_abort(NULL);   // Shutdown chip
    }
    //printf("Number of cores=%u\n", chip_info.cores);  
       
@@ -623,9 +635,11 @@ esp_chip_info_t chip_info;
        } else {
           ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
        }
-      esp_deep_sleep_start();   // Or asm("break 1, 1");
+      esp_system_abort(NULL);  
    }
    
+   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+   esp_sleep_config_gpio_isolate();
    esp_wifi_stop(); 
 }
 
@@ -636,24 +650,23 @@ void app_main(void)
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
    printf("Port tick period=%lu ms\n", portTICK_PERIOD_MS);
    printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
-   printf("Max internal memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-   printf("Max internal memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+   printf("Max internal memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+   printf("Max internal memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
    
    size_t psram_size = esp_psram_get_size();
    printf("PSRAM size=%d bytes\n", psram_size);
    printf("Max mapped PSRAM memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-   printf("Max malloc memory (buggy!)=%u\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+   printf("Max malloc default memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+   // char *ptr = heap_caps_malloc(1e6, MALLOC_CAP_SPIRAM);  // malloc from PSRAM
       
-   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-   esp_sleep_config_gpio_isolate();
-   check_chip();
+   init_CPU();
    
    /* Initial setup */
    xMainTask = xTaskGetCurrentTaskHandle();
    if (setup()) {
        ESP_LOGE(TAG, "Error al inicializar. Coche no arranca!");
        oledBigMessage(1, "SHUTDOWN");
-       esp_deep_sleep_start();   // Shutdown chip
+       esp_system_abort(NULL);  // Or esp_deep_sleep_start();   
    }
      
    startTasks();
@@ -673,10 +686,10 @@ void app_main(void)
       oledBigMessage(0, NULL);      
    }
 
-   /* 
+   /*****
       Main loop. It sleeps until a problem is found. During sleep, the car is controlled by the wiimote.
       After awakening, it solves the problem, and goes back to sleep.
-   */
+   ******/
    for (;;) {
       WiimoteButton_t buttons;  
       
@@ -738,7 +751,6 @@ char str[6];
 bool is_stalled;
 
     printf("TaskUltrasonic from CPU %d\n", xPortGetCoreID());
-    //  esp_rom_delay_us(100);  consider using this in future implementation
     xWakeTime = xTaskGetTickCount();
     for (;;) {
         uint32_t dist;
@@ -754,7 +766,7 @@ bool is_stalled;
         
         esp_err_t res = ultrasonic_measure_cm(&sonarHCSR04, MAX_DISTANCE_CM, &dist);
         if (res != ESP_OK) {
-            ESP_LOGE(TAG, "%s: ultrasonic_measure_cm failed", __func__);
+            //ESP_LOGE(TAG, "%s: ultrasonic_measure_cm failed", __func__);
             continue;
         }
        
@@ -822,6 +834,35 @@ bool is_stalled;
 }
 
 
+
+/**
+Periodically read the IMU data
+**/
+void TaskIMURead(void *pvParameters)  
+{
+TickType_t param = (TickType_t)pvParameters;
+uint8_t delay_should, delay_actual;
+int rc;
+int64_t tick;
+static int64_t previousTick;
+
+   rc = setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, &delay_should);    // Setup IMU sensor
+   if (rc == -1) vTaskDelete(NULL);  // Error: task deletes itself
+   previousTick = esp_timer_get_time();
+   
+   for (;;) { // A Task shall never return or exit
+      tick = esp_timer_get_time();
+      delay_actual = (tick-previousTick)/1000;
+      if (delay_actual>1 && delay_actual < delay_should) vTaskDelay(pdMS_TO_TICKS(delay_should-delay_actual));
+      
+      printf("Delay since last IMU read: %d ms (should be %d)\n", delay_actual, delay_should);
+      
+      
+      previousTick = tick; 
+      vTaskDelay(pdMS_TO_TICKS(delay_should));
+  }
+}
+ 
 
 
 /*

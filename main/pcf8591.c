@@ -11,7 +11,6 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
-#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
@@ -61,36 +60,22 @@ static const float factor_i = 3.3/255/(0.1*1100/100);
 
 int setupPCF8591(uint8_t addr)
 {
-uint8_t byte = 6+64;  // Set autoincrement flag, start reading channel 2, single ended inputs, enable DAC 
-uint8_t data;
 esp_err_t rc;
-i2c_cmd_handle_t cmd;
-
-   chipAddr = addr;
+uint8_t buf[2];
    
    // Initialize chip
-   cmd = i2c_cmd_link_create();
-   i2c_master_start(cmd);
-   i2c_master_write_byte(cmd, (chipAddr << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-   i2c_master_write_byte(cmd, byte, ACK_VAL);   // Write control byte
-   i2c_master_write_byte(cmd, 0, ACK_VAL);      // set DAC output to zero
-   i2c_master_stop(cmd);
-   rc = i2c_master_cmd_begin(I2C_BUS, cmd, I2C_MASTER_TIMEOUT_MS  / portTICK_PERIOD_MS);
-   i2c_cmd_link_delete(cmd);         
+   buf[0] = 0b01000110;  // Control byte: set autoincrement flag, start reading channel 2, single ended inputs, enable DAC 
+   buf[1] = 0;           // Set DAC output to zero
+   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);       
    if (rc != ESP_OK) goto rw_error;  
    
    vTaskDelay(pdMS_TO_TICKS(10));   // Does not read correctly without delay
    
    // Read previous conversion and ignore it
-   cmd = i2c_cmd_link_create();
-   i2c_master_start(cmd);
-   i2c_master_write_byte(cmd, (chipAddr << 1) | I2C_MASTER_READ, ACK_CHECK_EN);
-   i2c_master_read_byte(cmd, &data, NACK_VAL);   
-   i2c_master_stop(cmd);
-   rc = i2c_master_cmd_begin(I2C_BUS, cmd, I2C_MASTER_TIMEOUT_MS  / portTICK_PERIOD_MS);
-   i2c_cmd_link_delete(cmd);         
+   rc = i2c_master_read_from_device(I2C_BUS, addr, buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);        
    if (rc != ESP_OK) goto rw_error;  
    
+   chipAddr = addr;
    return 0;
    
    /* error handling if read operation from I2C bus failed */
@@ -129,6 +114,7 @@ static int64_t previousTick;
 esp_err_t ret;
 int64_t tick;
 
+   if (chipAddr == 0) vTaskDelete(NULL);  // Could not initialize: task deletes itself
    tick = esp_timer_get_time();
    if (previousTick == 0) previousTick = tick;  // Only first time
 
@@ -187,7 +173,7 @@ int64_t tick;
    if (underVoltageTime >= maxUndervoltageTime) {  
       oledBigMessage(0, "Battery!");   
       oledBigMessage(1, "SHUTDOWN");
-      esp_deep_sleep_start();   // Shutdown chip
+      esp_system_abort("Out of battery");   // Shutdown chip
    }
    
    previousTick = tick; 
