@@ -1,4 +1,6 @@
 /*
+ * Based on ultrasonic by Ruslan V. Uss
+ * 
  * Copyright (c) 2016 Ruslan V. Uss <unclerus@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
@@ -9,7 +11,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright notice,
  *    this list of conditions and the following disclaimer in the documentation
  *    and/or other materials provided with the distribution.
- * 3. Neither the name of the copyright holder nor the names of itscontributors
+ * 3. Neither the name of the copyright holder nor the names of its contributors
  *    may be used to endorse or promote products derived from this software without
  *    specific prior written permission.
  *
@@ -36,101 +38,110 @@
  *
  * BSD Licensed as described in the file LICENSE
  */
-//#include <esp_idf_lib_helpers.h>
+
 #include "ultrasonic.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_timer.h>
 #include <esp32/rom/ets_sys.h>
 
-#define TRIGGER_LOW_DELAY 4
 #define TRIGGER_HIGH_DELAY 10
-#define PING_TIMEOUT 6000
-#define ROUNDTRIP_M 5800.0f
+#define PING_TIMEOUT_uS 1000
 #define ROUNDTRIP_CM 58
+#define MAXDISTANCE 320
+#define MINDISTANCE 5
 
-
-static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-#define PORT_ENTER_CRITICAL portENTER_CRITICAL(&mux)
-#define PORT_EXIT_CRITICAL portEXIT_CRITICAL(&mux)
 
 #define timeout_expired(start, len) ((esp_timer_get_time() - (start)) >= (len))
 
 #define CHECK_ARG(VAL) do { if (!(VAL)) return ESP_ERR_INVALID_ARG; } while (0)
 #define CHECK(x) do { esp_err_t __; if ((__ = x) != ESP_OK) return __; } while (0)
-#define RETURN_CRITICAL(RES) do { PORT_EXIT_CRITICAL; return RES; } while(0)
+
+   
+static TaskHandle_t callingTask;
+static volatile int64_t down_time;
+
+   
+/* ISR llamado cuando el trigger_pin cambia de estado HIGH a LOW
+Se usa para detectar la respuesta del sensor */
+static void IRAM_ATTR level_change(void *args)
+{
+BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+   if (callingTask == NULL) return;
+   down_time = esp_timer_get_time();
+   
+   vTaskNotifyGiveFromISR(callingTask, &xHigherPriorityTaskWoken);
+   /* If xHigherPriorityTaskWoken is now set to pdTRUE then a context switch
+    should be performed to ensure the interrupt returns directly to the highest
+    priority task.  The macro used for this purpose is dependent on the port in
+    use and may be called portEND_SWITCHING_ISR(). */
+   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+
 
 esp_err_t ultrasonic_init(const ultrasonic_sensor_t *dev)
 {
     CHECK_ARG(dev);
 
-    CHECK(gpio_reset_pin(dev->trigger_pin));
-    CHECK(gpio_reset_pin(dev->echo_pin));
-    CHECK(gpio_set_direction(dev->trigger_pin, GPIO_MODE_OUTPUT));
-    CHECK(gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT));
-
-    return gpio_set_level(dev->trigger_pin, 0);
+    ESP_ERROR_CHECK(gpio_reset_pin(dev->trigger_pin));
+    ESP_ERROR_CHECK(gpio_reset_pin(dev->echo_pin));
+    ESP_ERROR_CHECK(gpio_set_direction(dev->trigger_pin, GPIO_MODE_OUTPUT));
+    ESP_ERROR_CHECK(gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT));
+    
+    ESP_ERROR_CHECK(gpio_set_level(dev->trigger_pin, 0));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(dev->echo_pin, level_change, NULL));  
+    return ESP_OK;
 }
 
 
-esp_err_t ultrasonic_measure_raw(const ultrasonic_sensor_t *dev, uint32_t max_time_us, uint32_t *time_us)
+esp_err_t ultrasonic_measure_raw(const ultrasonic_sensor_t *dev, const uint32_t max_time_ms, uint32_t *time_us)
 {
+uint32_t ret;
+int64_t start_time;
+
     CHECK_ARG(dev && time_us);
+    callingTask = xTaskGetCurrentTaskHandle();
 
-    PORT_ENTER_CRITICAL;
+    // Previous ping isn't ended
+    if (gpio_get_level(dev->echo_pin)) return ESP_ERR_ULTRASONIC_PING;
 
-    // Ping: Low for 2..4 us, then high 10 us
-    CHECK(gpio_set_level(dev->trigger_pin, 0));
-    ets_delay_us(TRIGGER_LOW_DELAY);
+    // Ping: high for 10 us
     CHECK(gpio_set_level(dev->trigger_pin, 1));
     ets_delay_us(TRIGGER_HIGH_DELAY);
     CHECK(gpio_set_level(dev->trigger_pin, 0));
 
-    // Previous ping isn't ended
-    if (gpio_get_level(dev->echo_pin))
-        RETURN_CRITICAL(ESP_ERR_ULTRASONIC_PING);
-
-    // Wait for echo
-    int64_t start = esp_timer_get_time();
-    while (!gpio_get_level(dev->echo_pin))
-    {
-        if (timeout_expired(start, PING_TIMEOUT))
-            RETURN_CRITICAL(ESP_ERR_ULTRASONIC_PING_TIMEOUT);
+    // Wait for echo, takes ca. 600 us to arrive
+    start_time = esp_timer_get_time();
+    while (!gpio_get_level(dev->echo_pin)) {
+        if (timeout_expired(start_time, PING_TIMEOUT_uS))
+            return ESP_ERR_ULTRASONIC_PING_TIMEOUT;
     }
 
     // got echo, measuring
-    int64_t echo_start = esp_timer_get_time();
-    int64_t time = echo_start;
-    while (gpio_get_level(dev->echo_pin))
-    {
-        time = esp_timer_get_time();
-        if (timeout_expired(echo_start, max_time_us))
-            RETURN_CRITICAL(ESP_ERR_ULTRASONIC_ECHO_TIMEOUT);
-    }
-    PORT_EXIT_CRITICAL;
+    start_time = down_time = esp_timer_get_time();
+    CHECK(gpio_set_intr_type(dev->echo_pin, GPIO_INTR_NEGEDGE));
+    ret = ulTaskNotifyTake(
+         pdTRUE, // Clear the notification value before exiting: act as a binary semaphore
+         pdMS_TO_TICKS(max_time_ms) // Time for timeout
+    );   
+    CHECK(gpio_set_intr_type(dev->echo_pin, GPIO_INTR_DISABLE));
+    if (ret == 0) return ESP_ERR_ULTRASONIC_ECHO_TIMEOUT;
 
-    *time_us = time - echo_start;
-
+    *time_us = down_time - start_time;
+    if (*time_us < (MINDISTANCE * ROUNDTRIP_CM)) return ESP_ERR_ULTRASONIC_PING;  // Echo is too small, error
     return ESP_OK;
 }
 
-esp_err_t ultrasonic_measure(const ultrasonic_sensor_t *dev, float max_distance, float *distance)
+
+
+esp_err_t ultrasonic_measure_cm(const ultrasonic_sensor_t *dev, uint32_t *distance)
 {
     CHECK_ARG(dev && distance);
 
     uint32_t time_us;
-    CHECK(ultrasonic_measure_raw(dev, max_distance * ROUNDTRIP_M, &time_us));
-    *distance = time_us / ROUNDTRIP_M;
-
-    return ESP_OK;
-}
-
-esp_err_t ultrasonic_measure_cm(const ultrasonic_sensor_t *dev, uint32_t max_distance, uint32_t *distance)
-{
-    CHECK_ARG(dev && distance);
-
-    uint32_t time_us;
-    CHECK(ultrasonic_measure_raw(dev, max_distance * ROUNDTRIP_CM, &time_us));
+    CHECK(ultrasonic_measure_raw(dev, (MAXDISTANCE * ROUNDTRIP_CM)/1000, &time_us));
     *distance = time_us / ROUNDTRIP_CM;
 
     return ESP_OK;
