@@ -305,7 +305,6 @@ TaskHandle_t xHandle = NULL;
    configASSERT(xHandle);
    mando.taskHandle = xHandle;
 
- 
    xTaskCreatePinnedToCore(
      TaskUltrasonic,
      "TaskUltrasonic",    // A name just for humans
@@ -313,21 +312,9 @@ TaskHandle_t xHandle = NULL;
      (void*)SONARDELAY,   // Task parameter: period in ms to check sonar
      tskIDLE_PRIORITY+3,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
      &xHandle, 
-     PRO_CORE);  // Use CPU0, in order to avoid delays caused by eg interrupts when pressing buttons
+     RUNNING_CORE);
    configASSERT(xHandle);
 
-   
-   xTaskCreatePinnedToCore(
-     TaskIMURead,
-     "TaskIMURead",            // A name just for humans
-     STACK_SIZE+STACK_SIZE/2,  // Needs a bigger stack
-     (void*)NULL,         // Task parameter
-     tskIDLE_PRIORITY+3,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
-     &xHandle, 
-     RUNNING_CORE);
-   configASSERT(xHandle);    
-   
-   
    xTaskCreatePinnedToCore(
      TaskCheckPower,
      "TaskCheckPower",   // A name just for humans
@@ -598,6 +585,7 @@ int setup(void)
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
+   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C)) return 1;    // Setup IMU sensor
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -764,7 +752,7 @@ bool is_stalled;
         }
         tick = esp_timer_get_time();
         
-        esp_err_t res = ultrasonic_measure_cm(&sonarHCSR04, MAX_DISTANCE_CM, &dist);
+        esp_err_t res = ultrasonic_measure_cm(&sonarHCSR04, &dist);
         if (res != ESP_OK) {
             //ESP_LOGE(TAG, "%s: ultrasonic_measure_cm failed", __func__);
             continue;
@@ -833,35 +821,6 @@ bool is_stalled;
     }  // for (;;)
 }
 
-
-
-/**
-Periodically read the IMU data
-**/
-void TaskIMURead(void *pvParameters)  
-{
-TickType_t param = (TickType_t)pvParameters;
-uint8_t delay_should, delay_actual;
-int rc;
-int64_t tick;
-static int64_t previousTick;
-
-   rc = setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, &delay_should);    // Setup IMU sensor
-   if (rc == -1) vTaskDelete(NULL);  // Error: task deletes itself
-   previousTick = esp_timer_get_time();
-   
-   for (;;) { // A Task shall never return or exit
-      tick = esp_timer_get_time();
-      delay_actual = (tick-previousTick)/1000;
-      if (delay_actual>1 && delay_actual < delay_should) vTaskDelay(pdMS_TO_TICKS(delay_should-delay_actual));
-      
-      printf("Delay since last IMU read: %d ms (should be %d)\n", delay_actual, delay_should);
-      
-      
-      previousTick = tick; 
-      vTaskDelay(pdMS_TO_TICKS(delay_should));
-  }
-}
  
 
 
