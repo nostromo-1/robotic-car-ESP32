@@ -1,5 +1,6 @@
 /*
  * Based on ultrasonic by Ruslan V. Uss
+ * Original copyright notice follows
  * 
  * Copyright (c) 2016 Ruslan V. Uss <unclerus@gmail.com>
  *
@@ -49,7 +50,6 @@
 #define PING_TIMEOUT_uS 1000
 #define ROUNDTRIP_CM 58
 #define MAXDISTANCE 320
-#define MINDISTANCE 5
 
 
 #define timeout_expired(start, len) ((esp_timer_get_time() - (start)) >= (len))
@@ -62,23 +62,20 @@ static TaskHandle_t callingTask;
 static volatile int64_t down_time;
 
    
-/* ISR llamado cuando el trigger_pin cambia de estado HIGH a LOW
-Se usa para detectar la respuesta del sensor */
+/* This ISR is called when the echo pin changes from HIGH to LOW */
 static void IRAM_ATTR level_change(void *args)
 {
 BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-   if (callingTask == NULL) return;
-   down_time = esp_timer_get_time();
+   if (callingTask == NULL) return;   // In case of spurious signals
+   down_time = esp_timer_get_time();  // Mark time when echo signal goes HIGH->LOW
    
    vTaskNotifyGiveFromISR(callingTask, &xHigherPriorityTaskWoken);
    /* If xHigherPriorityTaskWoken is now set to pdTRUE then a context switch
     should be performed to ensure the interrupt returns directly to the highest
-    priority task.  The macro used for this purpose is dependent on the port in
-    use and may be called portEND_SWITCHING_ISR(). */
+    priority task. */
    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
-
 
 
 esp_err_t ultrasonic_init(const ultrasonic_sensor_t *dev)
@@ -91,21 +88,25 @@ esp_err_t ultrasonic_init(const ultrasonic_sensor_t *dev)
     ESP_ERROR_CHECK(gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT));
     
     ESP_ERROR_CHECK(gpio_set_level(dev->trigger_pin, 0));
-    ESP_ERROR_CHECK(gpio_isr_handler_add(dev->echo_pin, level_change, NULL));  
+    ESP_ERROR_CHECK(gpio_isr_handler_add(dev->echo_pin, level_change, NULL));   // Assumes gpio_install_isr_service has already been called
     return ESP_OK;
 }
 
 
+/**
+This function triggers the ultrasonic sensor and takes a read of the distance to an obstacle. 
+Other than the original, it checks for glitch conditions.
+And most important, it does not need to stop interrupts, so it does not affect other tasks.
++*/
 esp_err_t ultrasonic_measure_raw(const ultrasonic_sensor_t *dev, const uint32_t max_time_ms, uint32_t *time_us)
 {
-uint32_t ret;
 int64_t start_time;
 
     CHECK_ARG(dev && time_us);
-    callingTask = xTaskGetCurrentTaskHandle();
 
-    // Previous ping isn't ended
+    // Check if previous echo signal isn't ended. Sometimes the echo lasts for ca. 200 ms, dunno why
     if (gpio_get_level(dev->echo_pin)) return ESP_ERR_ULTRASONIC_PING;
+    callingTask = xTaskGetCurrentTaskHandle();
 
     // Ping: high for 10 us
     CHECK(gpio_set_level(dev->trigger_pin, 1));
@@ -114,15 +115,18 @@ int64_t start_time;
 
     // Wait for echo, takes ca. 600 us to arrive
     start_time = esp_timer_get_time();
-    while (!gpio_get_level(dev->echo_pin)) {
-        if (timeout_expired(start_time, PING_TIMEOUT_uS))
-            return ESP_ERR_ULTRASONIC_PING_TIMEOUT;
-    }
-
+    do {
+      while (!gpio_get_level(dev->echo_pin)) {
+         if (timeout_expired(start_time, PING_TIMEOUT_uS)) return ESP_ERR_ULTRASONIC_PING_TIMEOUT;
+      }
+      // Check that this LOW->HIGH transition is not a glitch caused by noise
+      ets_delay_us(5);  // After 5 us, the echo signal should still be HIGH if it is a real echo
+    } while (!gpio_get_level(dev->echo_pin));
+    
     // got echo, measuring
     start_time = down_time = esp_timer_get_time();
     CHECK(gpio_set_intr_type(dev->echo_pin, GPIO_INTR_NEGEDGE));
-    ret = ulTaskNotifyTake(
+    uint32_t ret = ulTaskNotifyTake(  // Wait till interrupt signal detects the HIGH->LOW transition in echo signal
          pdTRUE, // Clear the notification value before exiting: act as a binary semaphore
          pdMS_TO_TICKS(max_time_ms) // Time for timeout
     );   
@@ -130,7 +134,6 @@ int64_t start_time;
     if (ret == 0) return ESP_ERR_ULTRASONIC_ECHO_TIMEOUT;
 
     *time_us = down_time - start_time;
-    if (*time_us < (MINDISTANCE * ROUNDTRIP_CM)) return ESP_ERR_ULTRASONIC_PING;  // Echo is too small, error
     return ESP_OK;
 }
 
