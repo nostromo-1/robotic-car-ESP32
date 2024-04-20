@@ -726,38 +726,25 @@ void app_main(void)
 void TaskUltrasonic(void *pvParameters)
 {
 TickType_t xDelay = (TickType_t)pvParameters;
-TickType_t xWakeTime, extraDelay = 0;
 int64_t tick, referenceTick = 0;
 uint32_t stalledTime;
 const uint32_t maxStalledTime = 1200*1e3;  // Time in microseconds to flag car as stopped (it does not change its distance)
-static uint32_t distance_array[NUMPOS], pos_array;
-static int firstTime;
-static int32_t previous_distance, reference_distance;
+uint32_t distance_array[NUMPOS], pos_array = 0;
+
+int32_t previous_distance = 0, reference_distance = 0;
 static const char displayText[] = "Dist (cm):";
 int32_t suma, distance_local;
-char str[6];
 bool is_stalled;
+int firstTime = 0;
 
-    printf("TaskUltrasonic from CPU %d\n", xPortGetCoreID());
-    xWakeTime = xTaskGetTickCount();
+    TickType_t xWakeTime = xTaskGetTickCount();
     for (;;) {
         uint32_t dist;
-        BaseType_t xWasDelayed;
         
-        xWasDelayed = xTaskDelayUntil(&xWakeTime, pdMS_TO_TICKS(xDelay+extraDelay));
-        // If task was not delayed, it means period is too small (too much time spent in task, in ultrasonic_measure_cm)
-        if (xWasDelayed == pdFALSE) {
-           ESP_LOGW(TAG, "%s: Period (%lu ms) is too small. Increasing it\n", __func__, xDelay+extraDelay);
-           extraDelay += 10;
-        }
+        xTaskDelayUntil(&xWakeTime, pdMS_TO_TICKS(xDelay));
         tick = esp_timer_get_time();
+        if (ultrasonic_measure_cm(&sonarHCSR04, &dist) != ESP_OK) continue;
         
-        esp_err_t res = ultrasonic_measure_cm(&sonarHCSR04, &dist);
-        if (res != ESP_OK) {
-            //ESP_LOGE(TAG, "%s: ultrasonic_measure_cm failed", __func__);
-            continue;
-        }
-       
         distance_array[pos_array++] = dist;  // sonar measured distance in cm
         if (pos_array == NUMPOS) pos_array = 0;
         
@@ -784,6 +771,7 @@ bool is_stalled;
         
         /* Update display if distance changed since last reading */
         if (distance_local != previous_distance) {
+            char str[6];
             snprintf(str, sizeof(str), "%-3lu", distance_local);
             oledWriteString(8*sizeof(displayText), 0, str, false);  // update only distance number
             previous_distance = distance_local;
@@ -857,7 +845,7 @@ TickType_t xDelay = (TickType_t)pvParameters;
    
    for (;;) { // A Task shall never return or exit
       gpio_set_level(KARR_PIN, 1);
-      ets_delay_us(100);  // set high state for clock during 100 us 
+      ets_delay_us(10);  // set high state for clock during 10 us 
       gpio_set_level(KARR_PIN, 0);
       vTaskDelay(pdMS_TO_TICKS(xDelay));
   }
