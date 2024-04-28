@@ -32,6 +32,7 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "pcf8591.h"
 #include "sound.h"
 #include "imu.h"
+#include "network.h"
 
 
 /************ Define system values *********************/
@@ -274,16 +275,6 @@ static void startTasks(void)
 {
 TaskHandle_t xHandle = NULL;
    
-   xTaskCreatePinnedToCore(
-     TaskBlink,
-     "TaskBlink",   // A name just for humans
-     STACK_SIZE,    // in bytes. This stack size can be checked & adjusted by reading the Stack Highwater
-     (void*)1000,   // Task parameter: period in ms to blink
-     tskIDLE_PRIORITY,  // Priority, with (configMAX_PRIORITIES - 1) being the highest, and tskIDLE_PRIORITY (0) being the lowest
-     &xHandle, 
-     RUNNING_CORE);
-   configASSERT(xHandle);
-
    xTaskCreatePinnedToCore(
      TaskKarr,
      "TaskKarr",    // A name just for humans
@@ -548,8 +539,7 @@ const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
 
 
 int setup(void)
-{ 
-   ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
+{   
    i2c_master_init(); 
    if (oledInit(DISPLAY_I2C)) return 1;
    if (setupPCF8591(PCF8591_I2C)) return 1;
@@ -597,6 +587,7 @@ int setup(void)
 void init_CPU(void)
 {
 esp_chip_info_t chip_info;
+esp_err_t ret;
 
    /* Check chip info */
    esp_chip_info(&chip_info);
@@ -614,7 +605,7 @@ esp_chip_info_t chip_info;
         .format_if_mount_failed = false
    };
    
-   esp_err_t ret = esp_vfs_spiffs_register(&conf);
+   ret = esp_vfs_spiffs_register(&conf);
    if (ret != ESP_OK) {
       if (ret == ESP_FAIL) {
           ESP_LOGE(TAG, "Failed to mount or format filesystem");
@@ -628,26 +619,37 @@ esp_chip_info_t chip_info;
    
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
    esp_sleep_config_gpio_isolate();
-   esp_wifi_stop(); 
+   
+   ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
+   
+   //Initialize NVS
+   //nvs_flash_erase();
+   ret = nvs_flash_init();
+   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+     ESP_ERROR_CHECK(nvs_flash_erase());
+     ret = nvs_flash_init();
+   }
+   ESP_ERROR_CHECK(ret);
 }
 
 
 void app_main(void)
 {
    printf("Hello world from CPU %d\n", xPortGetCoreID());
+   printf("RTOS version %s\n", tskKERNEL_VERSION_NUMBER);
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
    printf("Port tick period=%lu ms\n", portTICK_PERIOD_MS);
    printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
    printf("Max internal memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
    printf("Max internal memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
    
-   size_t psram_size = esp_psram_get_size();
-   printf("PSRAM size=%d bytes\n", psram_size);
+   printf("PSRAM size=%d bytes\n", esp_psram_get_size());
    printf("Max mapped PSRAM memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
    printf("Max malloc default memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
    // char *ptr = heap_caps_malloc(1e6, MALLOC_CAP_SPIRAM);  // malloc from PSRAM
       
    init_CPU();
+   init_wifi_network();
    
    /* Initial setup */
    xMainTask = xTaskGetCurrentTaskHandle();
@@ -813,25 +815,6 @@ int firstTime = 0;
 
 
 /*
-  Blinks the built-in led with the specified period (as parameter). This is a life sign.
-*/
-void TaskBlink(void *pvParameters)  
-{
-TickType_t xDelay = (TickType_t)pvParameters;
-   
-   gpio_reset_pin(LED_BUILTIN);
-   gpio_set_direction(LED_BUILTIN, GPIO_MODE_OUTPUT);
-   
-   for (;;) { // A Task shall never return or exit
-      gpio_set_level(LED_BUILTIN, 1);
-      vTaskDelay(pdMS_TO_TICKS(xDelay/2)); 
-      gpio_set_level(LED_BUILTIN, 0);
-      vTaskDelay(pdMS_TO_TICKS(xDelay/2));
-  }
-}
-
-
-/*
   KARR effect
   Thread in charge of sending a clock pulse to the circuit implementing the KARR scan effect.
   At each LH transition, the led will change 
@@ -839,13 +822,21 @@ TickType_t xDelay = (TickType_t)pvParameters;
 void TaskKarr(void *pvParameters)  
 {
 TickType_t xDelay = (TickType_t)pvParameters;
-   
+int count = 0, state = 0;
+  
    gpio_reset_pin(KARR_PIN);  
    gpio_set_direction(KARR_PIN, GPIO_MODE_OUTPUT);  
+   gpio_reset_pin(LED_BUILTIN);
+   gpio_set_direction(LED_BUILTIN, GPIO_MODE_OUTPUT);
    
    for (;;) { // A Task shall never return or exit
-      gpio_set_level(KARR_PIN, 1);
-      ets_delay_us(10);  // set high state for clock during 10 us 
+      if (count++ == 3) {
+         state = !state;
+         gpio_set_level(LED_BUILTIN, state);   // Blinks the built-in led as a life sign
+         count = 0;
+      }
+      // Now, send a pulse to the 74HC4017
+      gpio_set_level(KARR_PIN, 1);  // Small pulse, 20 ns length is enough
       gpio_set_level(KARR_PIN, 0);
       vTaskDelay(pdMS_TO_TICKS(xDelay));
   }

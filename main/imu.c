@@ -652,7 +652,7 @@ float mxr, myr, mzr;
    // samples in FIFO are between 3 and 4, average 3: AG ODR = 119 Hz, M ODR = 40 Hz, 119/40=3
    // if AG ODR = 238, samples is between 6 and 8
    samples = byte & 0x3F;   // samples in FIFO could be zero  
-   printf("Samples: %d\n", samples);
+   //printf("Samples: %d\n", samples);
    if (samples < upsampling_factor) {  // Should not happen. Emit a warning message.
       ESP_LOGW(TAG, "%s: Timing problem: number of samples of accelerometer (%d) is less than upsampling factor (%d)", 
             __func__, samples, upsampling_factor);    
