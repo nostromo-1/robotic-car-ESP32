@@ -13,6 +13,9 @@
 #include "esp_wifi.h"
 #include "esp_wps.h"
 #include "esp_netif_sntp.h"
+#include "driver/gpio.h"
+
+#include "oled96.h"
 
 #ifndef PIN2STR
 #define PIN2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5], (a)[6], (a)[7]
@@ -43,18 +46,20 @@ static int s_retry_num = 0;
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
-    static int ap_idx = 1;
+static int ap_idx = 1;
+char buf[32];
 
     switch (event_id) {
         case WIFI_EVENT_STA_START:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_START");
             break;
+            
         case WIFI_EVENT_STA_DISCONNECTED:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_DISCONNECTED");
             if (s_retry_num < MAX_RETRY_ATTEMPTS) {
+                ESP_LOGI(TAG, "retry to connect to the AP");
                 esp_wifi_connect();
                 s_retry_num++;
-                ESP_LOGI(TAG, "retry to connect to the AP");
             } else if (ap_idx < s_ap_creds_num) {
                 /* Try the next AP credential if first one fails */
                 if (ap_idx < s_ap_creds_num) {
@@ -68,8 +73,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "Failed to connect!");
                 xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             }
-
             break;
+            
         case WIFI_EVENT_STA_WPS_ER_SUCCESS:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_SUCCESS");
             {
@@ -96,22 +101,27 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                 esp_wifi_connect();
             }
             break;
+            
         case WIFI_EVENT_STA_WPS_ER_FAILED:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_FAILED");
             ESP_ERROR_CHECK(esp_wifi_wps_disable());
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             break;
+            
         case WIFI_EVENT_STA_WPS_ER_TIMEOUT:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_TIMEOUT");
             ESP_ERROR_CHECK(esp_wifi_wps_disable());
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             break;
+            
         case WIFI_EVENT_STA_WPS_ER_PIN:
             ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_PIN");
             /* display the PIN code */
-            wifi_event_sta_wps_er_pin_t* event = (wifi_event_sta_wps_er_pin_t*) event_data;
-            ESP_LOGI(TAG, "WPS_PIN = " PINSTR, PIN2STR(event->pin_code));
+            wifi_event_sta_wps_er_pin_t* event = (wifi_event_sta_wps_er_pin_t*)event_data;
+            snprintf(buf, sizeof(buf), "WPS PIN:" PINSTR, PIN2STR(event->pin_code));
+            oledWriteString(0, 5, buf, false);
             break;
+            
         default:
             break;
     }
@@ -121,7 +131,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
                              int32_t event_id, void* event_data)
 {
-    ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+    ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
     ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
     s_retry_num = 0;
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -129,7 +139,7 @@ static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
 
 
 
-int wifi_init_sta(void)
+int wifi_init_sta(int wps_pin)
 {
 wifi_config_t wifi_config;
    
@@ -150,8 +160,11 @@ wifi_config_t wifi_config;
     // Check if wifi data is stored in NVS. If so, use it. Otherwise, start WPS service
     if (esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config) == ESP_OK) {
        size_t ssidLen = strlen((char*)wifi_config.sta.ssid);
-       if (ssidLen == 0) {
-         ESP_LOGI(TAG, "Wifi credentials not in NVS. Start WPS service");
+       if (ssidLen == 0 || gpio_get_level(wps_pin) == 0) {
+         ESP_LOGI(TAG, "Start WPS service");
+         oledBigMessage(0, "  WPS  ");
+         oledWriteString(0, 6, "Press WPS button", false);
+         oledWriteString(0, 7, "in wifi router", false);
          ESP_ERROR_CHECK(esp_wifi_wps_enable(&wps_config));
          ESP_ERROR_CHECK(esp_wifi_wps_start(0));
        }
@@ -159,8 +172,8 @@ wifi_config_t wifi_config;
     }
     else return -1;
     
-    /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
-     * number of re-tries (WIFI_FAIL_BIT). The bits are set by the event handler */
+    /* Wait until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
+     * number of re-tries. The bits are set by the event handler */
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
     esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config);
     if (bits & WIFI_CONNECTED_BIT) {
@@ -168,6 +181,8 @@ wifi_config_t wifi_config;
         return 0;
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to wifi");
+        esp_wifi_disconnect();
+        esp_wifi_stop();
         return -1;
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
@@ -191,7 +206,7 @@ time_t now;
 
 
 
-int init_wifi_network(void)
+int init_wifi_network(int wps_pin)
 {
     // Prepare NTP configuration
     //esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");  
@@ -200,7 +215,7 @@ int init_wifi_network(void)
     esp_netif_sntp_init(&config); 
     
     // Start wifi connection
-    if (wifi_init_sta() < 0) return -1;
+    if (wifi_init_sta(wps_pin) < 0) return -1;
 
     // Set time with NTP
     int retry = 0;
@@ -209,7 +224,7 @@ int init_wifi_network(void)
         ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
     }
     
-    return 0;
+    return 0;  // NTP error is not a reason for failure
 }
 
 

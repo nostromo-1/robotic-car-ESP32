@@ -2,7 +2,7 @@
 #define NETWORK_H
 
 
-int init_wifi_network(void);
+int init_wifi_network(int wps_pin);
 
 
 

@@ -542,8 +542,14 @@ int setup(void)
 {   
    i2c_master_init(); 
    if (oledInit(DISPLAY_I2C)) return 1;
-   if (setupPCF8591(PCF8591_I2C)) return 1;
    oledSetInversion(true);   // Fill display, as life sign
+   if (setupPCF8591(PCF8591_I2C)) return 1;
+   
+   /* Re-scan button; button pressed gives a 0 */
+   gpio_reset_pin(mando.scan_pin);  // Enables pull-up
+   gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);   
+   init_wifi_network(mando.scan_pin);  // Starts WPS if mando.scan_pin is pressed when starting wifi
+   oledFill(0x00);  // Clear display
 
    // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
@@ -564,12 +570,7 @@ int setup(void)
    if (setupMotor(&m_izdo)) return 1;
    if (setupMotor(&m_dcho)) return 1;
    
-   
    //setupBMP280(BMP280_I2C, TIMER4);  // Setup temperature/pressure sensor
-   
-   /* Re-scan button; button pressed gives a 0 */
-   gpio_reset_pin(mando.scan_pin);  // Enables pull-up
-   gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
 
    if (setupWiimote()) return 1;
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
@@ -623,7 +624,6 @@ esp_err_t ret;
    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
    
    //Initialize NVS
-   //nvs_flash_erase();
    ret = nvs_flash_init();
    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
      ESP_ERROR_CHECK(nvs_flash_erase());
@@ -649,7 +649,6 @@ void app_main(void)
    // char *ptr = heap_caps_malloc(1e6, MALLOC_CAP_SPIRAM);  // malloc from PSRAM
       
    init_CPU();
-   init_wifi_network();
    
    /* Initial setup */
    xMainTask = xTaskGetCurrentTaskHandle();
