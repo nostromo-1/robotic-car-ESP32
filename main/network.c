@@ -1,4 +1,10 @@
+/**********
+File network.c
+It takes care of all network issues: wifi set-up, WPS. NTP
 
+
+
+***********/
 
 
 #include <string.h>
@@ -13,16 +19,15 @@
 #include "esp_wifi.h"
 #include "esp_wps.h"
 #include "esp_netif_sntp.h"
-#include "driver/gpio.h"
+
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
 
 #include "oled96.h"
 
-#ifndef PIN2STR
-#define PIN2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5], (a)[6], (a)[7]
-#define PINSTR "%c%c%c%c%c%c%c%c"
-#endif
-
 #define MAX_RETRY_ATTEMPTS  3
+#define OTA_TIMEOUT_MS  5000
 
 
 /* FreeRTOS event group to signal when we are connected*/
@@ -34,7 +39,10 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-static const char *TAG = "network";
+static const char* TAG = __FILE__;
+static const char* ota_url = "https://raw.githubusercontent.com/nostromo-1/robotic-car-ESP32/main/build/robotic-car.bin";
+// PEM certificate for downloading OTA firmware. It is embedded in the program file at build time.
+extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_raw_githubusercontent_com_pem_start");
 
 static esp_wps_config_t wps_config = WPS_CONFIG_INIT_DEFAULT(WPS_TYPE_PBC);
 static wifi_config_t wps_ap_creds[MAX_WPS_AP_CRED];
@@ -43,11 +51,82 @@ static int s_retry_num = 0;
 
 
 
+
+static void ota_event_handler(void* arg, esp_event_base_t event_base,
+                          int32_t event_id, void* event_data)
+{
+    if (event_base == ESP_HTTPS_OTA_EVENT) {
+        switch (event_id) {
+            case ESP_HTTPS_OTA_START:
+                ESP_LOGI(TAG, "OTA started");
+                break;
+            case ESP_HTTPS_OTA_CONNECTED:
+                ESP_LOGI(TAG, "Connected to server");
+                break;
+            case ESP_HTTPS_OTA_GET_IMG_DESC:
+                ESP_LOGI(TAG, "Reading Image Description");
+                break;
+            case ESP_HTTPS_OTA_VERIFY_CHIP_ID:
+                ESP_LOGI(TAG, "Verifying chip id of new image: %d", *(esp_chip_id_t *)event_data);
+                break;
+            case ESP_HTTPS_OTA_DECRYPT_CB:
+                ESP_LOGI(TAG, "Callback to decrypt function");
+                break;
+            case ESP_HTTPS_OTA_WRITE_FLASH:
+                ESP_LOGD(TAG, "Writing to flash: %d written", *(int *)event_data);
+                break;
+            case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
+                ESP_LOGI(TAG, "Boot partition updated. Next Partition: %d", *(esp_partition_subtype_t *)event_data);
+                break;
+            case ESP_HTTPS_OTA_FINISH:
+                ESP_LOGI(TAG, "OTA finish");
+                break;
+            case ESP_HTTPS_OTA_ABORT:
+                ESP_LOGI(TAG, "OTA abort");
+                break;
+        }
+    }
+}
+
+
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
+{
+    switch (evt->event_id) {
+    case HTTP_EVENT_ERROR:
+        ESP_LOGD(TAG, "HTTP_EVENT_ERROR");
+        break;
+    case HTTP_EVENT_ON_CONNECTED:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_CONNECTED");
+        break;
+    case HTTP_EVENT_HEADER_SENT:
+        ESP_LOGD(TAG, "HTTP_EVENT_HEADER_SENT");
+        break;
+    case HTTP_EVENT_ON_HEADER:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
+        break;
+    case HTTP_EVENT_ON_DATA:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+        break;
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
+        break;
+    case HTTP_EVENT_DISCONNECTED:
+        ESP_LOGD(TAG, "HTTP_EVENT_DISCONNECTED");
+        break;
+    case HTTP_EVENT_REDIRECT:
+        ESP_LOGD(TAG, "HTTP_EVENT_REDIRECT");
+        break;
+    }
+    return ESP_OK;
+}
+
+
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
 static int ap_idx = 1;
-char buf[32];
 
     switch (event_id) {
         case WIFI_EVENT_STA_START:
@@ -114,14 +193,6 @@ char buf[32];
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             break;
             
-        case WIFI_EVENT_STA_WPS_ER_PIN:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_PIN");
-            /* display the PIN code */
-            wifi_event_sta_wps_er_pin_t* event = (wifi_event_sta_wps_er_pin_t*)event_data;
-            snprintf(buf, sizeof(buf), "WPS PIN:" PINSTR, PIN2STR(event->pin_code));
-            oledWriteString(0, 5, buf, false);
-            break;
-            
         default:
             break;
     }
@@ -139,7 +210,7 @@ static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
 
 
 
-int wifi_init_sta(int wps_pin)
+int wifi_init_sta(bool do_wps)
 {
 wifi_config_t wifi_config;
    
@@ -149,18 +220,19 @@ wifi_config_t wifi_config;
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     if (!sta_netif) return -1;
    
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();  // Default values store config in NVS when esp_wifi_set_config
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
                                                   
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &got_ip_event_handler, NULL));                                                       
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &got_ip_event_handler, NULL));    
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));  // Station mode (not AP mode)
     ESP_ERROR_CHECK(esp_wifi_start());    
     
-    // Check if wifi data is stored in NVS. If so, use it. Otherwise, start WPS service
+    // If wifi data is stored in NVS, use it. Otherwise, run WPS
+    // But if user presses WPS button when car starts, run WPS service in any case
     if (esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config) == ESP_OK) {
        size_t ssidLen = strlen((char*)wifi_config.sta.ssid);
-       if (ssidLen == 0 || gpio_get_level(wps_pin) == 0) {
+       if (ssidLen == 0 || do_wps) {
          ESP_LOGI(TAG, "Start WPS service");
          oledBigMessage(0, "  WPS  ");
          oledWriteString(0, 6, "Press WPS button", false);
@@ -184,7 +256,8 @@ wifi_config_t wifi_config;
         esp_wifi_disconnect();
         esp_wifi_stop();
         return -1;
-    } else {
+    } 
+    else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
         return -1;
     }
@@ -198,24 +271,139 @@ void time_sync_notification_cb(struct timeval *tv)
 time_t now;
 
     time(&now);
-    // Set timezone to Central European Standard Time. See https://ftp.fau.de/aminet/util/time/tzinfo.txt
-    setenv("TZ", "CET-1CEST", 1);
+    setenv("TZ", "CET-1CEST", 1); // Set timezone to Central European Standard Time. See https://ftp.fau.de/aminet/util/time/tzinfo.txt
     tzset();
     ESP_LOGI(TAG, "Time set via NTP: %s", ctime(&now));
 }
 
 
+static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
+{
+    esp_err_t err = ESP_OK;
+    /* Uncomment to add custom headers to HTTP request */
+    // err = esp_http_client_set_header(http_client, "Custom-Header", "Value");
+    return err;
+}
 
-int init_wifi_network(int wps_pin)
+
+static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
+{
+    if (new_app_info == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_app_desc_t running_app_info;
+    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
+        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+        ESP_LOGI(TAG, "New firmware version: %s", new_app_info->version);
+    }
+
+    if (memcmp(new_app_info->version, running_app_info.version, sizeof(new_app_info->version)) == 0) {
+        ESP_LOGW(TAG, "Current running version is the same. Do not continue the update.");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+
+void get_ota_firmware(void)
+{
+esp_err_t err, ota_finish_err = ESP_OK;
+esp_http_client_config_t config = {
+        .url = ota_url,
+        .cert_pem = (char *)server_cert_pem_start,
+        .event_handler = http_event_handler,
+        .timeout_ms = OTA_TIMEOUT_MS,
+        .keep_alive_enable = true,
+        .skip_cert_common_name_check = false,
+};
+esp_https_ota_config_t ota_config = {
+        .http_config = &config,
+        .http_client_init_cb = _http_client_init_cb, // Register a callback to be invoked after esp_http_client is initialized
+        .partial_http_download = true,
+        .max_http_request_size = CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
+};
+    
+    ESP_LOGI(TAG, "Attempting to download firmware update from %s", config.url);
+    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL));  
+    esp_wifi_set_ps(WIFI_PS_NONE);  // Disable any WiFi power save mode, this allows best throughput
+    
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
+        return;
+    }
+    esp_app_desc_t app_desc;
+    err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed");
+        goto ota_end;
+    }        
+    err = validate_image_header(&app_desc);
+    if (err != ESP_OK) goto ota_end;
+    
+    int ota_size = esp_https_ota_get_image_size(https_ota_handle);
+    if (ota_size == -1) {
+        ESP_LOGE(TAG, "esp_https_ota_get_image_size failed");
+        goto ota_end;       
+    }
+    oledBigMessage(0, "Firmware");
+    oledBigMessage(1, "download");
+    // Read firmware file in loop
+    while (1) {
+        static const uint8_t glyph[] = {0xFF, 0, 0, 0, 0, 0, 0, 0}; 
+        uint8_t pos = 0;
+       
+        err = esp_https_ota_perform(https_ota_handle);
+        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) break;
+        
+        int len = esp_https_ota_get_image_len_read(https_ota_handle);
+        if (len != -1) {
+            ESP_LOGD(TAG, "Image bytes read: %d", len);
+            oledSetBitmap8x8((len*127)/ota_size, 0, glyph);
+            oledSetBitmap8x8((len*127)/ota_size, 1, glyph);
+        }
+    }
+    
+    if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) {
+        // the OTA image was not completely received and user can customise the response to this situation.
+        ESP_LOGE(TAG, "Complete data was not received.");
+        goto ota_end;
+    } else {
+        ota_finish_err = esp_https_ota_finish(https_ota_handle);
+        if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
+            ESP_LOGI(TAG, "Firmware update successful. Rebooting ...");
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            esp_restart();
+        } else {
+            if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
+                ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+            }
+            ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
+            return;
+        }
+    }
+        
+ota_end:
+    esp_https_ota_abort(https_ota_handle);
+    ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed");
+    return;
+}
+
+
+int init_wifi_network(bool do_wps)
 {
     // Prepare NTP configuration
-    //esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");  
-    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(2, ESP_SNTP_SERVER_LIST("hora.roa.es", "pool.ntp.org"));  
-    config.sync_cb = time_sync_notification_cb;
-    esp_netif_sntp_init(&config); 
+    //esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");  
+    esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(2, ESP_SNTP_SERVER_LIST("hora.roa.es", "pool.ntp.org"));  
+    sntp_config.sync_cb = time_sync_notification_cb;
+    esp_netif_sntp_init(&sntp_config); 
     
     // Start wifi connection
-    if (wifi_init_sta(wps_pin) < 0) return -1;
+    if (wifi_init_sta(do_wps) < 0) return -1;
 
     // Set time with NTP
     int retry = 0;

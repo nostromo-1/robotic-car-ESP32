@@ -12,6 +12,7 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "freertos/task.h"
 #include "esp_sleep.h"
 #include "esp_chip_info.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
@@ -86,8 +87,9 @@ SPI0/1: GPIO6-11 and GPIO16-17 are usually connected to the SPI flash and PSRAM 
 JTAG: GPIO12-15 are usually used for inline debug.
 GPI: GPIO34-39 can only be set as input mode and do not have software-enabled pullup or pulldown functions.
 TXD & RXD are usually used for flashing and debugging.
-ADC2: ADC2 pins cannot be used when Wi-Fi is used. So, if you are having trouble getting the value from an ADC2 GPIO while using Wi-Fi, 
-you may consider using an ADC1 GPIO instead, which should solve your problem. 
+ADC2: ADC2 pins (10 channels, attached to GPIOs 0, 2, 4, 12 - 15 and 25 - 27) cannot be used when Wi-Fi is used. 
+So, if you are having trouble getting the value from an ADC2 GPIO while using Wi-Fi, 
+you may consider using an ADC1 GPIO instead (8 channels, attached to GPIOs 32 - 39), which should solve your problem. 
 Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and Bluetooth with sleep mode enabled.
 */
 
@@ -102,14 +104,14 @@ Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and
 #define SONAR_TRIGGER_PIN 14
 #define SONAR_ECHO_PIN    35
 
-#define PITO_PIN   12  // This pin remains low when deep sleep
-#define WMSCAN_PIN 15
-#define AUDR_PIN   25  // DAC channel 0 in ESP32
-#define AMPLI_PIN  13
+#define PITO_PIN    12  // This pin remains low when deep sleep; others are high, so buzzer would sound
+#define WMSCAN_PIN  15
+#define AUDR_PIN    25  // DAC channel 0 in ESP32
+#define AMPLI_PIN   13
 #define LSENSOR_PIN 36
 #define RSENSOR_PIN 39
 #define KARR_PIN    27
-
+#define MIC_PIN     34  // ADC channel 6 in ESP32
 
 /***************** Define constants and parameters ****************/
 #define DISTMIN 45           /* distancia en cm a la que entendemos que hay un obstáculo */
@@ -159,7 +161,6 @@ typedef struct {
 
 
 
-
 /** These are the shared memory variables used for thread intercommunication **/
 _Atomic uint32_t distance = UINT32_MAX;
 _Atomic int8_t velocidadCoche = INITIAL_SPEED;  // velocidad objetivo del coche. Entre 0 y 100; el sentido de la marcha viene dado por el botón pulsado (A/B)
@@ -178,6 +179,7 @@ static const char* TAG = __FILE__;
 static TaskHandle_t xMainTask;
 static QueueHandle_t wav_queue;
 static int LEDs[] = {0b0001, 0b0011, 0b0111, 0b1111};
+static const esp_app_desc_t* fw_description;
 
 
 // program options, specified in menuconfig
@@ -384,7 +386,7 @@ static void i2c_master_init()
    ESP_ERROR_CHECK(i2c_param_config(I2C1_NUM, &conf1));
    ESP_ERROR_CHECK(i2c_driver_install(I2C1_NUM, conf1.mode, 0, 0, 0));  
 
-   
+   /*
    // Scan I2C buses
    for (int bus=0; bus<=1; bus++) {
       printf("i2c%i scan: \n", bus);
@@ -400,7 +402,7 @@ static void i2c_master_init()
          if (ret == ESP_OK) printf("Found device at: 0x%2x\n", i);
       }
    }
-   
+   */
 }
 
 
@@ -539,17 +541,30 @@ const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
 
 
 int setup(void)
-{   
+{
+int rc;
+bool do_wps;
+   
    i2c_master_init(); 
    if (oledInit(DISPLAY_I2C)) return 1;
    oledSetInversion(true);   // Fill display, as life sign
-   if (setupPCF8591(PCF8591_I2C)) return 1;
    
-   /* Re-scan button; button pressed gives a 0 */
+   // Write app name and version on display
+   oledWriteString(0, 0, fw_description->project_name, false);
+   oledWriteString(0, 1, fw_description->version, false);
+   vTaskDelay(pdMS_TO_TICKS(500));
+   
+   // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);   
-   init_wifi_network(mando.scan_pin);  // Starts WPS if mando.scan_pin is pressed when starting wifi
-   oledFill(0x00);  // Clear display
+   do_wps = (gpio_get_level(mando.scan_pin) == 0);
+   rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
+   if (rc == 0) {
+      oledClear();
+      get_ota_firmware();  // If wifi is up, try to get new firmware version
+      esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
+   }
+   oledClear();
 
    // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
@@ -577,6 +592,7 @@ int setup(void)
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
    if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C)) return 1;    // Setup IMU sensor
+   if (setupPCF8591(PCF8591_I2C)) return 1;
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -620,6 +636,7 @@ esp_err_t ret;
    
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
    esp_sleep_config_gpio_isolate();
+   esp_log_level_set("wifi", ESP_LOG_WARN);  // Avoid those many info messages
    
    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
    
@@ -635,6 +652,8 @@ esp_err_t ret;
 
 void app_main(void)
 {
+   fw_description = esp_app_get_description();
+   printf("App %s, version %s\n", fw_description->project_name, fw_description->version);
    printf("Hello world from CPU %d\n", xPortGetCoreID());
    printf("RTOS version %s\n", tskKERNEL_VERSION_NUMBER);
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);

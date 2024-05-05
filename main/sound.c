@@ -65,7 +65,7 @@ int fd;
 uint32_t fileLen, channels, rate, bitsPerSample, frameSize, dataSize;  
 char *p, preamble[44];
 ssize_t n_read;
-esp_err_t ret;
+esp_err_t ret;  // Do not delete, ESP_GOTO_ON_ERROR needs it
 
    WRITE_ATOMIC(playing_audio, true);
    fd = open(filename, O_RDONLY);
@@ -161,7 +161,7 @@ esp_err_t ret;
                value = (((int32_t)value16_l+(int32_t)value16_r)/2*256)/65536;
                break;  
          }
-         buf_dac[count++] = (value*120)/100; 
+         buf_dac[count++] = (value*120)/100;   // Amplify and store
       }
       if (atomic_load_explicit(&cancel_audio, memory_order_relaxed)) break;
       ESP_ERROR_CHECK_WITHOUT_ABORT(dac_continuous_write(dac_handle, buf_dac, count, NULL, -1));
