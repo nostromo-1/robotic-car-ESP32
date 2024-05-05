@@ -138,7 +138,16 @@ int64_t start_time;
 }
 
 
-
+/**
+ * @brief Measure distance in centimeters
+ *
+ * @param dev Pointer to the device descriptor
+ * @param[out] distance Distance in centimeters
+ * @return `ESP_OK` on success, otherwise:
+ *         - ::ESP_ERR_ULTRASONIC_PING         - Invalid state (previous ping is not ended)
+ *         - ::ESP_ERR_ULTRASONIC_PING_TIMEOUT - Device is not responding
+ *         - ::ESP_ERR_ULTRASONIC_ECHO_TIMEOUT - Distance is too big or wave is scattered
+ */
 esp_err_t ultrasonic_measure_cm(const ultrasonic_sensor_t *dev, uint32_t *distance)
 {
     CHECK_ARG(dev && distance);
