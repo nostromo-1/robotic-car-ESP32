@@ -22,7 +22,7 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 
 #define ERR(ret, format, arg...)                                       \
    {                                                                   \
-         fprintf(stderr, "%s: " format "\n" , __func__ , ## arg);      \
+         ESP_LOGE(TAG, "%s: " format, __func__ , ## arg);              \
          return ret;                                                   \
    }
    
@@ -35,6 +35,7 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 #define ACK_VAL                 0x0          /* I2C ack value */
 #define NACK_VAL                0x1          /* I2C nack value */
 
+static const char* TAG = __FILE__;
 static uint8_t chipAddr;
 static float voltage, current;
 
