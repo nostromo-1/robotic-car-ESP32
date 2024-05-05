@@ -22,8 +22,8 @@ int oledInit(uint8_t iAddress);
 // Turns off the display and closes the I2C handle
 void oledShutdown(void);
 
-// Fills the display with the byte pattern
-int oledFill(uint8_t ucPattern);
+// Clear display
+int oledClear(void);
 
 // Write a text string to the display at x (column 0-127) and y (row 0-7)
 // bLarge = 0 - 8x8 font, bLarge = 1 - 16x24 font
@@ -40,10 +40,10 @@ int oledSetInversion(bool invert);
 
 // Write an 8x8 bitmap to display
 // graph is an 8 byte array, glyph must be turned 90 degrees to the right
-int oledSetBitmap8x8(int x, int y, const uint8_t *graph);
+int oledSetBitmap8x8(uint8_t x, uint8_t y, const uint8_t *graph);
 
 // Write a message in big font on display
-int oledBigMessage(int line, const char *msg);
+int oledBigMessage(uint8_t line, const char *msg);
 
 
 #endif // OLED96_H
