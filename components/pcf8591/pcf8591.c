@@ -77,6 +77,7 @@ uint8_t buf[2];
    if (rc != ESP_OK) goto rw_error;  
    
    chipAddr = addr;
+   checkPower();   // Call it already, so power supply status can be read very soon, before tasks start
    return 0;
    
    /* error handling if read operation from I2C bus failed */
