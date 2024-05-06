@@ -201,7 +201,6 @@ static const esp_app_desc_t* fw_description;
 
 bool remoteOnly=(CONFIG_REMOTE_ONLY==1);
 bool useEncoder=(CONFIG_USE_ENCODER==1);
-bool checkBattery=(CONFIG_CHECK_BATTERY==1);
 bool softTurn=(CONFIG_SOFT_TURN==1);
 bool calibrateIMU=(CONFIG_CALIBRATE_IMU==1);
 
@@ -543,7 +542,6 @@ const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
 int setup(void)
 {
 int rc;
-bool do_wps;
    
    i2c_master_init(); 
    if (oledInit(DISPLAY_I2C)) return 1;
@@ -554,18 +552,21 @@ bool do_wps;
    oledWriteString(0, 1, fw_description->version, false);
    vTaskDelay(pdMS_TO_TICKS(500));
    
+   if (setupPCF8591(PCF8591_I2C)) return 1;  // It will return if no power available
+   
    // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
-   gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);   
-   do_wps = (gpio_get_level(mando.scan_pin) == 0);
-   rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
-   if (rc == 0) {
+   gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
+   if (getMainVoltageValue() >= 6.6) {  // Only start wifi if power supply is OK
+      bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
+      rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
+      if (rc == 0) {
+         oledClear();
+         get_ota_firmware();  // If wifi is up, try to get new firmware version
+         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
+      }
       oledClear();
-      get_ota_firmware();  // If wifi is up, try to get new firmware version
-      esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
    }
-   oledClear();
-
    // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
    if (wav_queue == NULL) return 1;
@@ -592,7 +593,6 @@ bool do_wps;
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
    if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C)) return 1;    // Setup IMU sensor
-   if (setupPCF8591(PCF8591_I2C)) return 1;
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -670,20 +670,20 @@ void app_main(void)
    init_CPU();
    
    /* Initial setup */
-   xMainTask = xTaskGetCurrentTaskHandle();
    if (setup()) {
        ESP_LOGE(TAG, "Error al inicializar. Coche no arranca!");
        oledBigMessage(1, "SHUTDOWN");
        esp_system_abort(NULL);  // Or esp_deep_sleep_start();   
    }
-     
+   
+   xMainTask = xTaskGetCurrentTaskHandle();
    startTasks();
    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for tasks to activate
    ESP32Wiimote_setPlayerLEDs(LEDs[velocidadCoche/26]);
  
    // Check if battery low; -1 means that the ADC does not work correctly
    float volts = getMainVoltageValue();  
-   if (checkBattery && volts>=0 && volts<6.6) {
+   if (volts < 6.6) {
       oledBigMessage(0, "Battery!");
       audioplay("/spiffs/batterylow.wav", 1);
       oledBigMessage(0, NULL);           

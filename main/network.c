@@ -1,12 +1,11 @@
 /**********
 File network.c
-It takes care of all network issues: wifi set-up, WPS. NTP
-
-
+It takes care of all network issues: wifi set-up, WPS, NTP
+It can also download a new firmware version from github
 
 ***********/
 
-
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
@@ -58,31 +57,31 @@ static void ota_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == ESP_HTTPS_OTA_EVENT) {
         switch (event_id) {
             case ESP_HTTPS_OTA_START:
-                ESP_LOGI(TAG, "OTA started");
+                ESP_LOGD(TAG, "OTA started");
                 break;
             case ESP_HTTPS_OTA_CONNECTED:
-                ESP_LOGI(TAG, "Connected to server");
+                ESP_LOGD(TAG, "Connected to server");
                 break;
             case ESP_HTTPS_OTA_GET_IMG_DESC:
-                ESP_LOGI(TAG, "Reading Image Description");
+                ESP_LOGD(TAG, "Reading Image Description");
                 break;
             case ESP_HTTPS_OTA_VERIFY_CHIP_ID:
-                ESP_LOGI(TAG, "Verifying chip id of new image: %d", *(esp_chip_id_t *)event_data);
+                ESP_LOGD(TAG, "Verifying chip id of new image: %d", *(esp_chip_id_t *)event_data);
                 break;
             case ESP_HTTPS_OTA_DECRYPT_CB:
-                ESP_LOGI(TAG, "Callback to decrypt function");
+                ESP_LOGD(TAG, "Callback to decrypt function");
                 break;
             case ESP_HTTPS_OTA_WRITE_FLASH:
                 ESP_LOGD(TAG, "Writing to flash: %d written", *(int *)event_data);
                 break;
             case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
-                ESP_LOGI(TAG, "Boot partition updated. Next Partition: %d", *(esp_partition_subtype_t *)event_data);
+                ESP_LOGD(TAG, "Boot partition updated. Next Partition: %d", *(esp_partition_subtype_t *)event_data);
                 break;
             case ESP_HTTPS_OTA_FINISH:
-                ESP_LOGI(TAG, "OTA finish");
+                ESP_LOGD(TAG, "OTA finish");
                 break;
             case ESP_HTTPS_OTA_ABORT:
-                ESP_LOGI(TAG, "OTA abort");
+                ESP_LOGD(TAG, "OTA abort");
                 break;
         }
     }
@@ -210,7 +209,7 @@ static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
 
 
 
-int wifi_init_sta(bool do_wps)
+static int wifi_init_sta(bool do_wps)
 {
 wifi_config_t wifi_config;
    
@@ -288,26 +287,39 @@ static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
 
 static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 {
-    if (new_app_info == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+esp_err_t err;
+esp_app_desc_t running_app_info;
+char remote_version[sizeof(new_app_info->version)];
+char local_version[sizeof(new_app_info->version)];
 
+    if (new_app_info == NULL) return ESP_ERR_INVALID_ARG;
     const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_app_desc_t running_app_info;
-    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
-        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
-        ESP_LOGI(TAG, "New firmware version: %s", new_app_info->version);
+    err = esp_ota_get_partition_description(running, &running_app_info);
+    if (err != ESP_OK) return err;
+    
+    ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+    ESP_LOGI(TAG, "Remote firmware version: %s", new_app_info->version);
+    
+    for (int i=0; i<sizeof(new_app_info->version); i++) {
+       char p;
+       p = running_app_info.version[i];
+       if (p == '\0') local_version[i] = p;
+       else local_version[i] = (p < '0' || p > '9')?'0':p;
+       p = new_app_info->version[i];
+       if (p == '\0') remote_version[i] = p;
+       else remote_version[i] = (p < '0' || p > '9')?'0':p;
     }
-
-    if (memcmp(new_app_info->version, running_app_info.version, sizeof(new_app_info->version)) == 0) {
-        ESP_LOGW(TAG, "Current running version is the same. Do not continue the update.");
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
+    
+    int local_v = atoi(local_version);
+    int remote_v = atoi(remote_version);
+    return (remote_v > local_v)?ESP_OK:ESP_FAIL;
 }
 
 
+/**
+Look for new firmware version in github. 
+If firmware there has a different version than the local one, download it and restart CPU.
+**/
 void get_ota_firmware(void)
 {
 esp_err_t err, ota_finish_err = ESP_OK;
@@ -363,37 +375,44 @@ esp_https_ota_config_t ota_config = {
         int len = esp_https_ota_get_image_len_read(https_ota_handle);
         if (len != -1) {
             ESP_LOGD(TAG, "Image bytes read: %d", len);
+            // Draw progress bar on display
             oledSetBitmap8x8((len*127)/ota_size, 0, glyph);
             oledSetBitmap8x8((len*127)/ota_size, 1, glyph);
         }
     }
     
     if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) {
-        // the OTA image was not completely received and user can customise the response to this situation.
-        ESP_LOGE(TAG, "Complete data was not received.");
+        // the OTA image was not completely received
+        ESP_LOGE(TAG, "Complete data was not received");
         goto ota_end;
+    } 
+    ota_finish_err = esp_https_ota_finish(https_ota_handle);
+    if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
+        ESP_LOGI(TAG, "Firmware update successful. Rebooting ...");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        esp_restart();
     } else {
-        ota_finish_err = esp_https_ota_finish(https_ota_handle);
-        if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
-            ESP_LOGI(TAG, "Firmware update successful. Rebooting ...");
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-            esp_restart();
-        } else {
-            if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
-                ESP_LOGE(TAG, "Image validation failed, image is corrupted");
-            }
-            ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
-            return;
+        if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
         }
+        ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
+        ESP_LOGI(TAG, "Firmware NOT updated");
     }
-        
+    return;
+    
 ota_end:
     esp_https_ota_abort(https_ota_handle);
-    ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed");
+    ESP_LOGI(TAG, "Firmware NOT updated");
     return;
 }
 
 
+/**
+Initialize wifi network:
+1) If do_wps is true, then it will always look for a WPS enabled station. If found, it will connect to it.
+Otherwise, it will connect to the last successful station.
+2) Set time from NTP server.
+**/
 int init_wifi_network(bool do_wps)
 {
     // Prepare NTP configuration

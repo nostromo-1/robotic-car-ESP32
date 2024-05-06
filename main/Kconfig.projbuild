@@ -22,12 +22,6 @@ menu "Robot Car"
             When enabled, the robot car will rotate by stopping one of the wheels.
             If disabled, it will rotate by reversing one of the wheels.
             Activate it only if the car is 2 wheel.
-            
-     config CHECK_BATTERY
-        bool "Check battery"
-        default y
-        help
-            When enabled, the robot car will periodically check the battery status and shutdown if too low.
 
      config CALIBRATE_IMU
         bool "Calibrate IMU"
