@@ -3,8 +3,10 @@
 
 
 int setupPCF8591(uint8_t addr);
-float getMainVoltageValue(void);
-void checkPower(void);
+float getSupplyVoltage(void);
+float getSupplyBattery1(void);
+float getSupplyCurrent(void);
+void readPowerSupply(void);
 
 
 #endif // PCF8591_H
