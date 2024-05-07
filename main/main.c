@@ -6,6 +6,7 @@ This is a ESP32 port of the original Raspberry Pi project.
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <inttypes.h>
 #include <stdatomic.h>
 #include "freertos/FreeRTOS.h"
@@ -552,12 +553,18 @@ int rc;
    oledWriteString(0, 1, fw_description->version, false);
    vTaskDelay(pdMS_TO_TICKS(500));
    
-   if (setupPCF8591(PCF8591_I2C)) return 1;  // It will return if no power available
+   if (setupPCF8591(PCF8591_I2C)) return 1;
+   readPowerSupply();
+   float voltage = getSupplyVoltage();
+   if (voltage < 6.2) {
+      ESP_LOGE(TAG, "Power supply too low (%.1fV). Aborting start.", voltage);
+      return 1;
+   }
    
    // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
-   if (getMainVoltageValue() >= 6.6) {  // Only start wifi if power supply is OK
+   if (getSupplyVoltage() >= 6.6) {  // Only start wifi if power supply is OK
       bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
       rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
       if (rc == 0) {
@@ -682,7 +689,7 @@ void app_main(void)
    ESP32Wiimote_setPlayerLEDs(LEDs[velocidadCoche/26]);
  
    // Check if battery low; -1 means that the ADC does not work correctly
-   float volts = getMainVoltageValue();  
+   float volts = getSupplyVoltage();  
    if (volts < 6.6) {
       oledBigMessage(0, "Battery!");
       audioplay("/spiffs/batterylow.wav", 1);
@@ -911,10 +918,67 @@ int rc;
 void TaskCheckPower(void *pvParameters)  
 {
 TickType_t xDelay = (TickType_t)pvParameters;
+static const uint8_t empty_battery[] = {0, 254, 130, 131, 131, 130, 254, 0};  // glyph for empty battery
+uint8_t battery_glyph[sizeof(empty_battery)];
+float voltage, current, battery1, battery2;
+char str[17];
+char str_old[sizeof(str)] = {0};
+int8_t step, old_step = -1;
+const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered
+uint32_t underVoltageTime = 0, n = 0;
+int64_t previousTick, tick;
    
+   previousTick = esp_timer_get_time();
    for (;;) { // A Task shall never return or exit
-      checkPower();
       vTaskDelay(pdMS_TO_TICKS(xDelay));  
+      readPowerSupply();
+      voltage = getSupplyVoltage();
+      current = getSupplyCurrent();
+      battery1 = getSupplyBattery1();
+      battery2 = voltage - battery1;
+      
+      if (voltage < 6.2) step = 0;        // Battery at 0%
+      else if (voltage < 6.6) step = 64;  // Battery at 20%
+      else if (voltage < 7.0) step = 64+32;      // Battery at 40%  
+      else if (voltage < 7.4) step = 64+32+16;   // Battery at 60%
+      else if (voltage < 7.8) step = 64+32+16+8; // Battery at 80%
+      else step = 64+32+16+8+4;  // Battery at 100%
+   
+      memcpy(battery_glyph, empty_battery, sizeof(empty_battery));
+      battery_glyph[2] += step;
+      battery_glyph[3] += step;
+      battery_glyph[4] = battery_glyph[3];
+      battery_glyph[5] = battery_glyph[2]; 
+
+      // If battery state changed, update battery symbol on display
+      if (step != old_step) {    
+         oledSetBitmap8x8(14*8, 0, battery_glyph);  
+         old_step = step;
+      }
+   
+      // Symbol blinks when battery low
+      if (step <= 64) { 
+         if (n++ & 1) oledSetBitmap8x8(14*8, 0, NULL);
+         else oledSetBitmap8x8(14*8, 0, battery_glyph);
+      }
+    
+      // Update display only if values changed (it is a slow operation)
+      snprintf(str, sizeof(str), "%.1fV %.2fA", voltage, current);
+      if (strcmp(str, str_old)) {
+         oledWriteString(0, 1, str, false);
+         strcpy(str_old, str);
+      }
+
+      // Shutdown if voltage is too low for a long period
+      tick = esp_timer_get_time();
+      if (battery1<2.9 || battery2<2.9) underVoltageTime += (tick-previousTick)/1000;
+      else underVoltageTime = 0;
+      if (underVoltageTime >= maxUndervoltageTime) {  
+         oledBigMessage(0, "Battery!");   
+         oledBigMessage(1, "SHUTDOWN");
+         esp_system_abort("Out of battery");   // Shutdown chip
+      }
+      previousTick = tick;         
   }
 }
 
