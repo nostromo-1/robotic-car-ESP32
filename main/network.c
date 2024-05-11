@@ -39,6 +39,7 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 static const char* TAG = __FILE__;
+// URL of firmware to download at start
 static const char* ota_url = "https://raw.githubusercontent.com/nostromo-1/robotic-car-ESP32/master/build/robotic-car.bin";
 // PEM certificate for downloading OTA firmware. It is embedded in the program file at build time.
 extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_raw_githubusercontent_com_pem_start");

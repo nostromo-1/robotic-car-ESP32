@@ -181,6 +181,7 @@ static TaskHandle_t xMainTask;
 static QueueHandle_t wav_queue;
 static int LEDs[] = {0b0001, 0b0011, 0b0111, 0b1111};
 static const esp_app_desc_t* fw_description;
+static bool use_IMU;
 
 
 // program options, specified in menuconfig
@@ -599,7 +600,9 @@ int rc;
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
-   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C)) return 1;    // Setup IMU sensor
+   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C) == 0) { // Setup IMU sensor
+      use_IMU = true;   
+   }
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -668,11 +671,12 @@ void app_main(void)
    printf("Minimal stack size=%u\n", configMINIMAL_STACK_SIZE);
    printf("Max internal memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
    printf("Max internal memory block=%u\n", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-   
+#ifdef CONFIG_SPIRAM
    printf("PSRAM size=%d bytes\n", esp_psram_get_size());
+   // char *ptr = heap_caps_malloc(1e6, MALLOC_CAP_SPIRAM);  // malloc from PSRAM
+#endif
    printf("Max mapped PSRAM memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
    printf("Max malloc default memory=%u\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-   // char *ptr = heap_caps_malloc(1e6, MALLOC_CAP_SPIRAM);  // malloc from PSRAM
       
    init_CPU();
    
@@ -957,10 +961,7 @@ int64_t previousTick, tick;
       }
    
       // Symbol blinks when battery low
-      if (step <= 64) { 
-         if (n++ & 1) oledSetBitmap8x8(14*8, 0, NULL);
-         else oledSetBitmap8x8(14*8, 0, battery_glyph);
-      }
+      if (step <= 64) oledSetBitmap8x8(14*8, 0, (n++ & 1)?battery_glyph:NULL);
     
       // Update display only if values changed (it is a slow operation)
       snprintf(str, sizeof(str), "%.1fV %.2fA", voltage, current);
@@ -971,7 +972,7 @@ int64_t previousTick, tick;
 
       // Shutdown if voltage is too low for a long period
       tick = esp_timer_get_time();
-      if (battery1<2.9 || battery2<2.9) underVoltageTime += (tick-previousTick)/1000;
+      if (battery1 < 2.9 || battery2 < 2.9) underVoltageTime += (tick-previousTick)/1000;
       else underVoltageTime = 0;
       if (underVoltageTime >= maxUndervoltageTime) {  
          oledBigMessage(0, "Battery!");   
