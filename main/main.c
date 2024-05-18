@@ -647,6 +647,8 @@ esp_err_t ret;
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
    esp_sleep_config_gpio_isolate();
    esp_log_level_set("wifi", ESP_LOG_WARN);  // Avoid those many info messages
+   esp_log_level_set("wifi_init", ESP_LOG_WARN); 
+   esp_log_level_set("esp_https_ota", ESP_LOG_WARN);
    
    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
    
@@ -925,7 +927,7 @@ TickType_t xDelay = (TickType_t)pvParameters;
 static const uint8_t empty_battery[] = {0, 254, 130, 131, 131, 130, 254, 0};  // glyph for empty battery
 uint8_t battery_glyph[sizeof(empty_battery)];
 float voltage, current, battery1, battery2;
-char str[17];
+char str[OLED_MAX_LINE_SIZE];
 char str_old[sizeof(str)] = {0};
 int8_t step, old_step = -1;
 const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered

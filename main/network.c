@@ -130,11 +130,11 @@ static int ap_idx = 1;
 
     switch (event_id) {
         case WIFI_EVENT_STA_START:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_START");
+            ESP_LOGD(TAG, "WIFI_EVENT_STA_START");
             break;
             
         case WIFI_EVENT_STA_DISCONNECTED:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_DISCONNECTED");
+            ESP_LOGD(TAG, "WIFI_EVENT_STA_DISCONNECTED");
             if (s_retry_num < MAX_RETRY_ATTEMPTS) {
                 ESP_LOGI(TAG, "retry to connect to the AP");
                 esp_wifi_connect();
@@ -142,20 +142,20 @@ static int ap_idx = 1;
             } else if (ap_idx < s_ap_creds_num) {
                 /* Try the next AP credential if first one fails */
                 if (ap_idx < s_ap_creds_num) {
-                    ESP_LOGI(TAG, "Connecting to SSID: %s, Passphrase: %s",
+                    ESP_LOGD(TAG, "Connecting to SSID: %s, Passphrase: %s",
                              wps_ap_creds[ap_idx].sta.ssid, wps_ap_creds[ap_idx].sta.password);
                     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wps_ap_creds[ap_idx++]) );
                     esp_wifi_connect();
                 }
                 s_retry_num = 0;
             } else {
-                ESP_LOGI(TAG, "Failed to connect!");
+                ESP_LOGD(TAG, "Failed to connect!");
                 xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             }
             break;
             
         case WIFI_EVENT_STA_WPS_ER_SUCCESS:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_SUCCESS");
+            ESP_LOGD(TAG, "WIFI_EVENT_STA_WPS_ER_SUCCESS");
             {
                 wifi_event_sta_wps_er_success_t *evt = (wifi_event_sta_wps_er_success_t *)event_data;
                 if (evt) {
@@ -167,7 +167,7 @@ static int ap_idx = 1;
                                sizeof(evt->ap_cred[i].passphrase));
                     }
                     /* If multiple AP credentials are received from WPS, connect with first one */
-                    ESP_LOGI(TAG, "Connecting to SSID: %s, Passphrase: %s",
+                    ESP_LOGD(TAG, "Connecting to SSID: %s, Passphrase: %s",
                              wps_ap_creds[0].sta.ssid, wps_ap_creds[0].sta.password);
                     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wps_ap_creds[0]));
                 }
@@ -182,13 +182,13 @@ static int ap_idx = 1;
             break;
             
         case WIFI_EVENT_STA_WPS_ER_FAILED:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_FAILED");
+            ESP_LOGD(TAG, "WIFI_EVENT_STA_WPS_ER_FAILED");
             ESP_ERROR_CHECK(esp_wifi_wps_disable());
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             break;
             
         case WIFI_EVENT_STA_WPS_ER_TIMEOUT:
-            ESP_LOGI(TAG, "WIFI_EVENT_STA_WPS_ER_TIMEOUT");
+            ESP_LOGD(TAG, "WIFI_EVENT_STA_WPS_ER_TIMEOUT");
             ESP_ERROR_CHECK(esp_wifi_wps_disable());
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             break;
@@ -203,7 +203,7 @@ static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
                              int32_t event_id, void* event_data)
 {
     ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
-    ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
+    ESP_LOGD(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
     s_retry_num = 0;
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 }
@@ -249,7 +249,7 @@ wifi_config_t wifi_config;
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
     esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config);
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to ap SSID: %s", wifi_config.sta.ssid);
+        ESP_LOGI(TAG, "Connected to AP SSID: %s", wifi_config.sta.ssid);
         return 0;
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to wifi");

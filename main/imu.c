@@ -94,12 +94,12 @@ So eg AG_ODR_952 is only possible if ODR_M = M_ODR_80, otherwise the FIFO overru
 In order for the upsampling of magnetometer data to work, ODR_AG must be an integer multiple of ODR_M (or very close).
 */
 static const enum {AG_ODR_OFF,AG_ODR_14_9,AG_ODR_59_5,AG_ODR_119,AG_ODR_238,AG_ODR_476,AG_ODR_952} ODR_AG = AG_ODR_238;  
-static const float odr_ag_modes[] = {0,14.9,59.5,119,238,476,952};  // Values in Hz
+static const float odr_ag_modes[] = {0.0f,14.9f,59.5f,119.0f,238.0f,476.0f,952.0f};  // Values in Hz
 
 static const enum {M_ODR_0_625,M_ODR_1_25,M_ODR_2_5,M_ODR_5,M_ODR_10,M_ODR_20,M_ODR_40,M_ODR_80} ODR_M = M_ODR_40;   
-static const float odr_m_modes[] = {0.625,1.25,2.5,5,10,20,40,80};  // Values in Hz
+static const float odr_m_modes[] = {0.625f,1.25f,2.5f,5.0f,10.0f,20.0f,40.0f,80.0f};  // Values in Hz
 
-static const float deltat = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
+static const float deltat = 1.0f/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
 static int upsampling_factor;  /* Ratio between both ODRs */
 
 
@@ -113,7 +113,7 @@ static float gRes, aRes, mRes;
 static int16_t err_AL[3];  // ex,ey,ez values (error for each axis in accelerometer)
 static int16_t err_GY[3];  // ex,ey,ez values (error for each axis in gyroscope)
 static int16_t err_MA[3];  // ex,ey,ez values (error for each axis in magnetometer, hardiron effects)
-static float scale_MA[3] = {1.0, 1.0, 1.0}; // ex,ey,ez values (error for each axis in magnetometer, softiron effects)
+static float scale_MA[3] = {1.0f, 1.0f, 1.0f}; // ex,ey,ez values (error for each axis in magnetometer, softiron effects)
 
 static float deviation_AL[3];  // Measured standard deviation of x, y and z values of accelerometer
 static float deviation_GY[3];  // Measured standard deviation of x, y and z values of gyroscope
@@ -125,7 +125,7 @@ static const float declination = +1.866;   // Local magnetic declination as give
 static const float magneticField = 0.458;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
 
 /* Madgwick filter variables */
-static float q[4] = {1.0, 0.0, 0.0, 0.0};    // vector to hold quaternion
+static float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};    // vector to hold quaternion
 
 /// Quote from kriswinner regarding beta parameter:
 /* 
@@ -140,8 +140,8 @@ In any case, this is the free parameter in the Madgwick filtering and fusion sch
 */
 
 // gyroscope measurement error in rads/s (start at 40 deg/s)
-#define GyroMeasError (M_PI * (40.0/180.0))
-static const float beta = 1.73205/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
+#define GyroMeasError (M_PI * (40.0f/180.0f))
+static const float beta = 1.73205f/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
 
 
 
@@ -163,9 +163,7 @@ static void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, flo
 */                                     
                                      
                                      
-                                     
-
-
+                                   
 /*
 Function to calculate heading, using magnetometer readings.
 It only works if the sensor is lying flat (z-axis normal to Earth).
@@ -174,13 +172,68 @@ It is a non tilt-compensated compass.
 void printHeading(float mx, float my)
 {
 float heading;
-char str[17];
+char str[OLED_MAX_LINE_SIZE];
   
    heading = -180/M_PI*atan2(my, mx);  // positive westwards
    //printf("Heading: %3.0f\n", heading);
    snprintf(str, sizeof(str), "Head:%-3.0f", heading);  
    oledWriteString(0, 5, str, false);  
 }
+
+
+
+/* 
+This function prints the LSM9DS1's orientation based on the
+accelerometer and magnetometer data: its roll, pitch and yaw angles, in aerospace convention.
+It represents a 3D tilt-compensated compass.
+It also calculates the tilt: angle that the normal of the car forms with the vertical.
+
+Procedure according https://www.nxp.com/docs/en/application-note/AN4248.pdf, 
+https://www.nxp.com/docs/en/application-note/AN4249.pdf and https://www.nxp.com/docs/en/application-note/AN3461.pdf 
+Angles according extrinsic rotation sequence x-y-z (https://en.wikipedia.org/wiki/Euler_angles),
+which is equivalent to the intrinsic rotation z-y'-x'' (so the angles are the same): yaw -> pitch -> roll.
+See also https://en.wikipedia.org/wiki/Davenport_chained_rotations
+*/
+void printOrientation(float ax, float ay, float az, float mx, float my, float mz)
+{
+float sinpitch, cospitch, sinroll, cosroll, rootayaz, rootaxayaz;
+const float alpha = 0.05f;
+  
+   rootayaz = sqrtf(ay*ay+az*az);
+   rootaxayaz = sqrtf(ax*ax+ay*ay+az*az);
+   
+   /*********** Calculate roll and pitch *************/
+   // Original roll equation: roll = atan2f(ay, az).
+   // But this is unstable when ay and az tend to zero (pitch = 90 degrees).
+   // To avoid this, add 5% of ax in denominator
+   roll = atan2f(ay, az+alpha*ax);  // roll angle able to range between -180 and 180, positive clockwise
+   pitch = atanf(-ax/rootayaz);     // pitch angle restricted between -90 and 90, positive downwards
+   
+   /*********** Calculate tilt-compensated heading (yaw angle) *************/
+   // intermediate results
+   sinroll = ay/rootayaz;
+   cosroll = az/rootayaz;
+   sinpitch = -ax/rootaxayaz;
+   cospitch = rootayaz/rootaxayaz;
+   
+   // now, calculate yaw
+   // yaw angle able to range between -180 and 180, positive westwardss
+   yaw = atan2f(mz*sinroll-my*cosroll, mx*cospitch+my*sinpitch*sinroll+mz*sinpitch*cosroll);
+   
+   /*********** Calculate tilt angle from vertical: cos(tilt)=cos(roll)*cos(pitch) *************/ 
+   tilt = acosf(cosroll*cospitch);  // tilt angle able to range between 0 and 180; tilt > 90: car is upside down
+   
+   /*** Translate angles in radians to degrees ***/
+   tilt *= 180/M_PI; 
+   yaw *= 180/M_PI; yaw -= declination; if (yaw<0) yaw += 360;  // yaw (heading) must be positive
+   pitch *= 180/M_PI; 
+   roll *= 180/M_PI; 
+     
+   printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);
+}
+
+
+
 
 
 /*
@@ -271,7 +324,7 @@ cal_error:
    err_AL[0] = err_AL[1] = err_AL[2] = 0;
    err_GY[0] = err_GY[1] = err_GY[2] = 0; 
    err_MA[0] = err_MA[1] = err_MA[2] = 0; 
-   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;       
+   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0f;       
    ERR(, "Cannot read data from calibration file %s", cal_file);
 /*   
 dev_error:
@@ -316,11 +369,11 @@ static int i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
 esp_err_t rc;
 uint8_t buf[2];
     
-    buf[0] = reg;
-    buf[1] = val;
-    rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (rc != ESP_OK) ERR(-1, "Error writing to IMU"); 
-    return 0;
+   buf[0] = reg;
+   buf[1] = val;
+   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   if (rc != ESP_OK) ERR(-1, "Error writing to IMU"); 
+   return 0;
 }
 
 
@@ -329,9 +382,11 @@ static int i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_
 {
 esp_err_t rc;
           
-    rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (rc != ESP_OK) ERR(-1, "Error reading from IMU"); 
-    return 0;
+   if (read_size == 0) return 0;
+   if (read_buf == NULL) return -1;
+   rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   if (rc != ESP_OK) ERR(-1, "Error reading from IMU"); 
+   return 0;
 }
 
 
@@ -382,7 +437,7 @@ uint8_t byte;
    byte = 0x0; 
    rc = i2cWriteByte(magAddr, 0x21, byte);
    if (rc < 0) goto rw_error;   
-   mRes = 4.0/32768;   // G/LSB
+   mRes = 4.0f/32768;   // G/LSB
    
    // Activate magnetometer, CTRL_REG3_M
    // I2C: enabled (b0), 0 (b0), LP: No (b0), 0 (b0), 0 (b0), SPI: wo (b0), mode: Continuous (b00)
@@ -421,7 +476,7 @@ uint8_t byte;
    byte = (0x00<<5) + (0x0<<3) + 0x0; 
    rc = i2cWriteByte(accelAddr, 0x20, byte);
    if (rc < 0) goto rw_error; 
-   aRes = 2.0/32768;   // g/LSB
+   aRes = 2.0f/32768;   // g/LSB
 
    // Set accelerometer, CTRL_REG7_XL
    // HR: enabled (b1), DCF: ODR/9 (b10), FDS: internal filter bypassed (b0), HPIS1: filter bypassed (b0)
@@ -448,7 +503,7 @@ uint8_t byte;
    byte = (ODR_AG<<5) + (0x0<<3) + 0x01; 
    rc = i2cWriteByte(accelAddr, 0x10, byte);
    if (rc < 0) goto rw_error; 
-   gRes = 245.0/32768;   // dps/LSB
+   gRes = 245.0f/32768;   // dps/LSB
    
    // Set gyro, CTRL_REG2_G
    // INT_SEL: 0 (b00), OUT_SEL: 0 (b10) (output after LPF2)
@@ -525,7 +580,7 @@ uint8_t byte;
    */
    
    // Start the IMU reading timer
-   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add 20% margin
+   uint32_t delay_ms = lroundf(1000.0f/odr_m_modes[ODR_M]*1.2f);  // Read IMU with a period of magnetometer ODR, add 20% margin
    esp_timer_handle_t timer;
    const esp_timer_create_args_t timer_args = {
             .dispatch_method = ESP_TIMER_TASK,
@@ -536,6 +591,7 @@ uint8_t byte;
 
    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 1000*delay_ms));
+   ESP_LOGI(TAG, "IMU is read every %lu ms", delay_ms);
       
    return 0;
    
@@ -608,14 +664,11 @@ uint32_t delay_should = (uint32_t)arg;
 
 int n, rc;   
 uint8_t samples, byte;
-static uint8_t buf[12*32];  // static, so it does not grow the stack
-char str[17];
+#define FIFO_LINE_SIZE 12   // Size of FIFO lines (12 bytes each)
+static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack
+char str[OLED_MAX_LINE_SIZE];
 static unsigned int samples_count, count, collision_sample;
 //static bool in_collision;
-
-/* These values are the raw signed 16-bit readings from the sensors */
-int16_t gx, gy, gz; // x, y, and z axis raw readings of the gyroscope
-int16_t ax, ay, az; // x, y, and z axis raw readings of the accelerometer
 
 /* Real (scaled and compensated) readings of the sensors */
 float axr, ayr, azr;
@@ -631,13 +684,13 @@ float mxr, myr, mzr;
    //printf("Delay since last IMU read: %llu ms\n", (start_tick-previous_tick)/1000);  
    
    /** Read magnetometer data, if ready **/
-   rc = read_magnetometer(&mxr, &myr, &mzr);
+   rc = read_magnetometer(&mxr, &myr, &mzr);  // Takes ca. 0.5 ms
    if (rc < 0) goto rw_error; 
    if (rc == 0) {
-      printf("No magnetometer data\n");
+      ESP_LOGI(TAG, "No magnetometer data");
       return;  // No magnetometer data yet
    }
-   if (!(count++%10)) printHeading(mxr, myr);
+   //if (!(count++%10)) printHeading(mxr, myr);
    // snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrt(mxr*mxr+myr*myr+mzr*mzr));  
    // oledWriteString(0, 6, str, false);  
    
@@ -648,12 +701,12 @@ float mxr, myr, mzr;
 
    rc = i2cWriteReadBytes(accelAddr, 0x2F, &byte, 1);  // Read FIFO_SRC register
    if (rc < 0) goto rw_error;
-   if (byte & 0x40) ESP_LOGW(TAG, "%s in %s: FIFO overrun!", __func__, __FILE__);  // Should not happen
+   if (byte & 0x40) ESP_LOGW(TAG, "%s: FIFO overrun!", __func__);  // Should not happen
    // samples in FIFO are between 3 and 4, average 3: AG ODR = 119 Hz, M ODR = 40 Hz, 119/40=3
    // if AG ODR = 238, samples is between 6 and 8
    samples = byte & 0x3F;   // samples in FIFO could be zero  
    //printf("Samples: %d\n", samples);
-   if (samples < upsampling_factor) {  // Should not happen. Emit a warning message.
+   if (samples < upsampling_factor) {  // Should not happen
       ESP_LOGW(TAG, "%s: Timing problem: number of samples of accelerometer (%d) is less than upsampling factor (%d)", 
             __func__, samples, upsampling_factor);    
    }    
@@ -661,12 +714,38 @@ float mxr, myr, mzr;
    if (samples) {  // if FIFO has sth, read it
       /* Burst read. Accelerometer and gyroscope sensors are activated at the same ODR.
          So read all FIFO lines (12 bytes each) in a single I2C transaction */
-      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, 12*samples);    
+      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms    
       if (rc < 0) goto rw_error;         
    }
-
-
+   // Process every sample
+   for (int n=0; n<samples; n++) {
+      /* These values are the raw signed 16-bit readings from the sensors */
+      int16_t gx, gy, gz; // x, y, and z axis raw readings of the gyroscope
+      int16_t ax, ay, az; // x, y, and z axis raw readings of the accelerometer      
+      uint8_t *p = buf + FIFO_LINE_SIZE*n;  
+      
+      /* Store accel and gyro data. X and Y axis are exchanged, so that reference system is
+      right handed, X axis points forwards, Y to the left, and filter algorithms work correctly */
+      gy = p[1]<<8 | p[0]; gx = p[3]<<8 | p[2]; gz = p[5]<<8 | p[4];
+      ay = p[7]<<8 | p[6]; ax = p[9]<<8 | p[8]; az = p[11]<<8 | p[10];        
    
+      /* Substract the measured error values obtained during calibration */
+      ax -= err_AL[0]; ay -= err_AL[1]; az -= err_AL[2]; 
+      gx -= err_GY[0]; gy -= err_GY[1]; gz -= err_GY[2]; 
+
+      /* Store real values in float variables */
+      axr = ax*aRes; ayr = ay*aRes; azr = az*aRes;      
+      gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;  
+
+      printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
+      //printOrientation(axr, ayr, azr, mxr, myr, mzr);
+   
+   
+   
+   
+   
+   }
+      
    previous_tick = start_tick;
    return;
    
