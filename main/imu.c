@@ -62,7 +62,7 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 
 #define I2C_BUS I2C_NUM_0   // i2c bus of IMU
 #define I2C_MASTER_TIMEOUT_MS   100
-
+#define FIFO_LINE_SIZE 12   // Size of FIFO lines (12 bytes each)
 
 extern _Atomic bool collision;  // Car has crashed when moving forwards or backwards
 
@@ -94,14 +94,15 @@ So eg AG_ODR_952 is only possible if ODR_M = M_ODR_80, otherwise the FIFO overru
 In order for the upsampling of magnetometer data to work, ODR_AG must be an integer multiple of ODR_M (or very close).
 */
 static const enum {AG_ODR_OFF,AG_ODR_14_9,AG_ODR_59_5,AG_ODR_119,AG_ODR_238,AG_ODR_476,AG_ODR_952} ODR_AG = AG_ODR_238;  
-static const float odr_ag_modes[] = {0.0f,14.9f,59.5f,119.0f,238.0f,476.0f,952.0f};  // Values in Hz
+static const float odr_ag_modes[] = {0.0,14.9,59.5,119.0,238.0,476.0,952.0};  // Values in Hz
 
 static const enum {M_ODR_0_625,M_ODR_1_25,M_ODR_2_5,M_ODR_5,M_ODR_10,M_ODR_20,M_ODR_40,M_ODR_80} ODR_M = M_ODR_40;   
-static const float odr_m_modes[] = {0.625f,1.25f,2.5f,5.0f,10.0f,20.0f,40.0f,80.0f};  // Values in Hz
+static const float odr_m_modes[] = {0.625,1.25,2.5,5.0,10.0,20.0,40.0,80.0};  // Values in Hz
 
-static const float deltat = 1.0f/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
+static const float deltat = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
 static int upsampling_factor;  /* Ratio between both ODRs */
 
+static Filter_t filter_mx, filter_my, filter_mz;   /* Interpolating filters for magnetometer */
 
 
 // gRes, aRes, and mRes store the current resolution for each sensor. 
@@ -113,7 +114,7 @@ static float gRes, aRes, mRes;
 static int16_t err_AL[3];  // ex,ey,ez values (error for each axis in accelerometer)
 static int16_t err_GY[3];  // ex,ey,ez values (error for each axis in gyroscope)
 static int16_t err_MA[3];  // ex,ey,ez values (error for each axis in magnetometer, hardiron effects)
-static float scale_MA[3] = {1.0f, 1.0f, 1.0f}; // ex,ey,ez values (error for each axis in magnetometer, softiron effects)
+static float scale_MA[3] = {1.0, 1.0, 1.0}; // ex,ey,ez values (error for each axis in magnetometer, softiron effects)
 
 static float deviation_AL[3];  // Measured standard deviation of x, y and z values of accelerometer
 static float deviation_GY[3];  // Measured standard deviation of x, y and z values of gyroscope
@@ -125,7 +126,7 @@ static const float declination = +1.866;   // Local magnetic declination as give
 static const float magneticField = 0.458;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
 
 /* Madgwick filter variables */
-static float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};    // vector to hold quaternion
+static float q[4] = {1.0, 0.0, 0.0, 0.0};    // vector to hold quaternion
 
 /// Quote from kriswinner regarding beta parameter:
 /* 
@@ -140,8 +141,8 @@ In any case, this is the free parameter in the Madgwick filtering and fusion sch
 */
 
 // gyroscope measurement error in rads/s (start at 40 deg/s)
-#define GyroMeasError (M_PI * (40.0f/180.0f))
-static const float beta = 1.73205f/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
+#define GyroMeasError (M_PI * (40.0f/180))
+static const float beta = 1.73205/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
 
 
 
@@ -162,7 +163,121 @@ static void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, flo
                                      float mx, float my, float mz);
 */                                     
                                      
-                                     
+                
+/************************ Filter functions ***********************/
+
+/**
+Digital FIR filter. This LPF is used for filterig magnetometer data.
+It is used to interpolate after upsampling from ODR_M to ODR_AG.
+It is designed to work with these combinations (upsampling x3 or x6):
+ODR_M=80, ODR_AG=476; ODR_M=80, ODR_AG=238;
+ODR_M=40, ODR_AG=238; ODR_M=40, ODR_AG=119; 
+ODR_M=20, ODR_AG=119; ODR_M=20, ODR_AG=59.5; 
+ODR_M=10, ODR_AG=59.5; 
+
+FIR filter designed with
+ http://t-filter.appspot.com
+
+sampling frequency: 240 Hz
+
+* 0 Hz - 4 Hz
+  gain = 1
+  desired ripple = 2 dB
+  actual ripple = 1.0141307953166252 dB
+
+* 5 Hz - 19 Hz
+  gain = 1
+  desired ripple = 35 dB
+  actual ripple = 33.758521533154735 dB
+
+* 20 Hz - 120 Hz
+  gain = 0
+  desired attenuation = -40 dB
+  actual attenuation = -43.613766226277974 dB
+**/
+
+static float LP_20_240_filter_taps[] = {
+  0.0017433948030936106,
+  0.009143190985861756,
+  0.012133516280499421,
+  0.01983655704542007,
+  0.02830242809740451,
+  0.03812682806131509,
+  0.048540195172121076,
+  0.05892094411702151,
+  0.06848428950018577,
+  0.07647321877548367,
+  0.08222112771837956,
+  0.08523022650867189,
+  0.08523022650867189,
+  0.08222112771837956,
+  0.07647321877548367,
+  0.06848428950018577,
+  0.05892094411702151,
+  0.048540195172121076,
+  0.03812682806131509,
+  0.02830242809740451,
+  0.01983655704542007,
+  0.012133516280499421,
+  0.009143190985861756,
+  0.0017433948030936106
+};
+
+
+static int LPFilter_init(Filter_t *filter, float *tap_array, unsigned tap_list_size) 
+{
+   if (filter == NULL) ERR(-1, "Invalid filter descriptor");
+   if (tap_array == NULL || tap_list_size == 0) ERR(-1, "Invalid tap array for filter");
+   filter->last_index = 0;
+   filter->taps_num = tap_list_size;
+   filter->taps = tap_array;
+   filter->history = calloc(tap_list_size, sizeof(float));
+   if (filter->history == NULL) ERR(-1, "Cannot allocate memory: %s", strerror(errno));
+   return 0;
+}
+
+
+static void LPFilter_close(Filter_t *filter) 
+{
+   if (filter->history) free(filter->history);
+}
+
+
+static void LPFilter_setDCgain(Filter_t *filter, float gain_value)
+{
+int i;
+float DC_gain = 0;  
+
+   if (filter == NULL) ERR(, "Invalid filter descriptor");
+   // Calculate current DC gain
+   for (i = 0; i < filter->taps_num; i++) DC_gain += filter->taps[i];
+   if (DC_gain == 0) ERR(, "DC gain of filter is zero, cannot set gain");
+   // Now, change taps so that the new DC gain is 'gain_value'
+   for (i = 0; i < filter->taps_num; i++) filter->taps[i] *= gain_value/DC_gain;     
+}
+
+
+static void LPFilter_put(Filter_t *filter, float input) 
+{
+  filter->history[filter->last_index++] = input;
+  if (filter->last_index == filter->taps_num) filter->last_index = 0;
+}
+
+
+static float LPFilter_get(const Filter_t *filter) 
+{
+  float acc = 0;
+  unsigned index = filter->last_index;
+  
+  for (unsigned i = 0; i < filter->taps_num; i++) {
+    index = (index != 0) ? index-1 : filter->taps_num-1;
+    acc += filter->history[index] * filter->taps[i];
+  }
+  return acc;
+}
+
+                
+/** IMU functions **/
                                    
 /*
 Function to calculate heading, using magnetometer readings.
@@ -197,7 +312,7 @@ See also https://en.wikipedia.org/wiki/Davenport_chained_rotations
 void printOrientation(float ax, float ay, float az, float mx, float my, float mz)
 {
 float sinpitch, cospitch, sinroll, cosroll, rootayaz, rootaxayaz;
-const float alpha = 0.05f;
+const float alpha = 0.05;
   
    rootayaz = sqrtf(ay*ay+az*az);
    rootaxayaz = sqrtf(ax*ax+ay*ay+az*az);
@@ -230,59 +345,6 @@ const float alpha = 0.05f;
    roll *= 180/M_PI; 
      
    printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);
-}
-
-
-
-
-
-/*
-This function prints the LSM9DS1's orientation based on the
-accelerometer and magnetometer data: its roll, pitch and yaw angles, in aerospace convention.
-It represents a 3D tilt-compensated compass.
-It also calculates the tilt: angle that the normal of the car forms with the vertical.
-
-Procedure according https://www.nxp.com/docs/en/application-note/AN4248.pdf, 
-https://www.nxp.com/docs/en/application-note/AN4249.pdf and https://www.nxp.com/docs/en/application-note/AN3461.pdf 
-Angles according extrinsic rotation sequence x-y-z (https://en.wikipedia.org/wiki/Euler_angles),
-which is equivalent to the intrinsic rotation z-y'-x'' (so the angles are the same): yaw -> pitch -> roll.
-See also https://en.wikipedia.org/wiki/Davenport_chained_rotations
-*/
-void updateOrientation(float ax, float ay, float az, float mx, float my, float mz)
-{
-float sinpitch, cospitch, sinroll, cosroll, rootayaz, rootaxayaz, alpha=0.05;
-  
-   rootayaz = sqrt(ay*ay+az*az);
-   rootaxayaz = sqrt(ax*ax+ay*ay+az*az);
-   
-   /*********** Calculate roll and pitch *************/
-   // Original roll equation: roll = atan2(ay, az).
-   // But this is unstable when ay and az tend to zero (pitch=90 degrees).
-   // To avoid this, add 5% of ax in denominator
-   roll = atan2(ay, az+alpha*ax);  // roll angle able to range between -180 and 180, positive clockwise
-   pitch = atan(-ax/rootayaz);     // pitch angle restricted between -90 and 90, positive downwards
-   
-   /*********** Calculate tilt-compensated heading (yaw angle) *************/
-   // intermediate results
-   sinroll = ay/rootayaz;
-   cosroll = az/rootayaz;
-   sinpitch = -ax/rootaxayaz;
-   cospitch = rootayaz/rootaxayaz;
-   
-   // now, calculate yaw
-   // yaw angle able to range between -180 and 180, positive westwards
-   yaw = atan2(mz*sinroll-my*cosroll, mx*cospitch+my*sinpitch*sinroll+mz*sinpitch*cosroll);
-   
-   /*********** Calculate tilt angle from vertical: cos(tilt)=cos(roll)*cos(pitch) *************/ 
-   tilt = acos(cosroll*cospitch);  // tilt angle able to range between 0 and 180
-   
-   /*** Translate angles in radians to degrees ***/
-   tilt *= 180/M_PI; 
-   yaw *= 180/M_PI; yaw -= declination; if (yaw<0) yaw += 360;  // yaw (heading) must be positive
-   pitch *= 180/M_PI; 
-   roll *= 180/M_PI; 
-     
-   //printf("M/A-based Yaw, Pitch, Roll: %3.0f %3.0f %3.0f   Tilt: %3.0f\n", yaw, pitch, roll, tilt);
 }
 
 
@@ -324,7 +386,7 @@ cal_error:
    err_AL[0] = err_AL[1] = err_AL[2] = 0;
    err_GY[0] = err_GY[1] = err_GY[2] = 0; 
    err_MA[0] = err_MA[1] = err_MA[2] = 0; 
-   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0f;       
+   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;       
    ERR(, "Cannot read data from calibration file %s", cal_file);
 /*   
 dev_error:
@@ -336,31 +398,6 @@ dev_error:
    */
 }
  
-
-
-
-/* Read and discard several samples of accel/gyro data, useful when initializing */
-static void read_discard_samples(int samples)
-{
-uint8_t buf[12]; 
-esp_err_t rc;
-int delay;
-static const uint8_t reg = 0x18;
-  
-   for (int i=0; i<samples; i++) {
-      delay = lroundf(1E3/odr_ag_modes[ODR_AG]);  // Time to wait for new data to arrive, in ms
-      if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
-      else ets_delay_us(delay*1000); 
-      
-      rc = i2c_master_write_read_device(I2C_BUS, accelAddr, &reg, 1, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-      if (rc < 0) goto rw_error;   
-   }
-   return;
-
-rw_error:
-   ERR(, "Cannot read/write data from IMU");   
-}
-
 
 
 // Send a single byte value to a register in the IMU
@@ -387,6 +424,28 @@ esp_err_t rc;
    rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
    if (rc != ESP_OK) ERR(-1, "Error reading from IMU"); 
    return 0;
+}
+
+
+/* Read and discard several samples of accel/gyro data, useful when initializing */
+static int read_discard_fifo_samples(uint8_t samples)
+{
+uint8_t buf[FIFO_LINE_SIZE]; 
+esp_err_t rc;
+int delay;
+  
+   for (int i=0; i<samples; i++) {
+      delay = lroundf(1000.0/odr_ag_modes[ODR_AG]);  // Time to wait for new data to arrive, in ms
+      if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
+      else ets_delay_us(delay*1000); 
+      
+      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
+      if (rc < 0) goto rw_error;   
+   }
+   return 0;
+
+rw_error:
+   ERR(-1, "Cannot read/write data from IMU");   
 }
 
 
@@ -424,7 +483,6 @@ uint8_t byte;
    magAddr = mag_addr;
      
    /************************* Set Magnetometer ***********************/
-   
    // Set magnetometer, CTRL_REG1_M
    // TEMP_COMP: Yes (b1), XY mode: ultra (b11), ODR: 40 Hz (b110), 0 (b0), ST: No (b0)
    byte = (0x01<<7) + (0x03<<5) + (ODR_M<<2) + 0x0; 
@@ -523,7 +581,8 @@ uint8_t byte;
    if (rc < 0) goto rw_error;  
  
    /* Initial samples after FIFO change and after power up (Table 12 of user manual) have to be discarded */
-   read_discard_samples(20);   
+   rc = read_discard_fifo_samples(20);
+   if (rc < 0) goto rw_error; 
    
    /************************** Handle calibration ********************/
    /*
@@ -551,20 +610,21 @@ uint8_t byte;
    rc = i2cWriteByte(accelAddr, 0x23, byte);
    if (rc < 0) goto rw_error;  
    
-   read_discard_samples(2);  // Discard samples after FIFO activation
+   rc = read_discard_fifo_samples(2);  // Discard samples after FIFO activation
+   if (rc < 0) goto rw_error; 
    
    /************************* Final actions ***********************/   
-   /*
    // Initialize low pass filter for interpolating magnetometer data
-   rc = LPFilter_init(&filter_mx, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(float));
+   rc = LPFilter_init(&filter_mx, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
    if (rc < 0) goto init_error;  
-   LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(float));
+   LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
    if (rc < 0) goto init_error;    
-   LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(float));
+   LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
    if (rc < 0) goto init_error; 
    // Set gain to upsampling_factor, to compensate for DC gain reduction due to interpolation
    LPFilter_setDCgain(&filter_mx, upsampling_factor);  // No need for filter_my and filter_mz, as they share the LP_20_240_filter_taps
    
+   /*
    // Initialize low pass filter for accelerometer data
    rc = LPFilter_init(&filter_ax, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
    if (rc < 0) goto init_error;  
@@ -580,7 +640,7 @@ uint8_t byte;
    */
    
    // Start the IMU reading timer
-   uint32_t delay_ms = lroundf(1000.0f/odr_m_modes[ODR_M]*1.2f);  // Read IMU with a period of magnetometer ODR, add 20% margin
+   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add 20% margin
    esp_timer_handle_t timer;
    const esp_timer_create_args_t timer_args = {
             .dispatch_method = ESP_TIMER_TASK,
@@ -601,9 +661,9 @@ rw_error:
    ERR(-1, "Cannot read/write data from IMU");
 
    /* error handling if initialization failed */   
-//init_error:
+init_error:
    //closeLSM9DS1();
-   //ERR(-1, "Error initializing the IMU");
+   ERR(-1, "Error initializing the IMU");
 }
 
 
@@ -664,7 +724,6 @@ uint32_t delay_should = (uint32_t)arg;
 
 int n, rc;   
 uint8_t samples, byte;
-#define FIFO_LINE_SIZE 12   // Size of FIFO lines (12 bytes each)
 static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack
 char str[OLED_MAX_LINE_SIZE];
 static unsigned int samples_count, count, collision_sample;
@@ -675,7 +734,7 @@ float axr, ayr, azr;
 float gxr, gyr, gzr;
 float mxr, myr, mzr; 
 //float axrf, ayrf, azrf; // values after LPF
-//float mxrf, myrf, mzrf; // values after LPF
+float mxrf, myrf, mzrf; // values after LPF
 //float daxr;
 
    start_tick = esp_timer_get_time();
@@ -714,7 +773,7 @@ float mxr, myr, mzr;
    if (samples) {  // if FIFO has sth, read it
       /* Burst read. Accelerometer and gyroscope sensors are activated at the same ODR.
          So read all FIFO lines (12 bytes each) in a single I2C transaction */
-      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms    
+      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms for 7 samples
       if (rc < 0) goto rw_error;         
    }
    // Process every sample
@@ -737,8 +796,21 @@ float mxr, myr, mzr;
       axr = ax*aRes; ayr = ay*aRes; azr = az*aRes;      
       gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;  
 
-      printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
-      //printOrientation(axr, ayr, azr, mxr, myr, mzr);
+      /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
+      First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
+      eliminate the spectral replica of the original signal. This interpolates the values. */
+      if (samples_count++%upsampling_factor == 0) {  // After the 0-valued samples, feed the real magnetometer value 
+         LPFilter_put(&filter_mx, mxr); LPFilter_put(&filter_my, myr); LPFilter_put(&filter_mz, mzr);  
+      }
+      else {  // Introduce 0-valued samples to align both ODR
+         LPFilter_put(&filter_mx, 0); LPFilter_put(&filter_my, 0); LPFilter_put(&filter_mz, 0);         
+      }
+      // Take output of the filter
+      mxrf = LPFilter_get(&filter_mx); myrf = LPFilter_get(&filter_my); mzrf = LPFilter_get(&filter_mz);
+      
+      
+      //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
+      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
    
    
    

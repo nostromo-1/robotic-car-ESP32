@@ -512,7 +512,7 @@ BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
 int setupWiimote(void)
 {
-static uint8_t bluetooth_glyph[] = {0, 66, 36, 255, 153, 90, 36, 0}; 
+static const uint8_t bluetooth_glyph[] = {0, 66, 36, 255, 153, 90, 36, 0}; 
 const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
    
    oledSetBitmap8x8(15*8, 0, NULL);  // 15: last position in line (0-15), clear BT icon

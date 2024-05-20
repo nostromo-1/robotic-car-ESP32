@@ -14,7 +14,7 @@ Based on the following original code:
 
 *****************************************************************************/
 
-#define OLED_MAX_LINE_SIZE 17   // Max number of characters in a line on the display, small font
+#define OLED_MAX_LINE_SIZE 17   // Max number of characters+1 in a line on the display, small font
 
 // Initialize the OLED96 library for a specific I2C address
 int oledInit(uint8_t iAddress);
