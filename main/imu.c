@@ -73,7 +73,8 @@ typedef struct {
 
 
 typedef struct {
-  float *history, *taps;
+  float *history;
+  const float *taps;
   unsigned int last_index, taps_num;
 } Filter_t;
 
@@ -122,8 +123,8 @@ static float deviation_MA[3];  // Measured standard deviation of x, y and z valu
 
 static const char *cal_file = "/spiffs/calibration.dat"; // File where calibration data is stored
 static const char *dev_file = "/spiffs/deviation.dat";   // File where standard deviation data is stored
-static const float declination = +1.866;   // Local magnetic declination as given by http://www.magnetic-declination.com/
-static const float magneticField = 0.458;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
+static const float declination = +1.866;    // Local magnetic declination as given by http://www.magnetic-declination.com/
+static const float magnetic_field = 0.458;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
 
 /* Madgwick filter variables */
 static float q[4] = {1.0, 0.0, 0.0, 0.0};    // vector to hold quaternion
@@ -141,7 +142,7 @@ In any case, this is the free parameter in the Madgwick filtering and fusion sch
 */
 
 // gyroscope measurement error in rads/s (start at 40 deg/s)
-#define GyroMeasError (M_PI * (40.0f/180))
+#define GyroMeasError (M_PI * (40.0/180))
 static const float beta = 1.73205/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
 
 
@@ -196,7 +197,7 @@ sampling frequency: 240 Hz
   actual attenuation = -43.613766226277974 dB
 **/
 
-static float LP_20_240_filter_taps[] = {
+static const float LP_20_240_filter_taps[] = {
   0.0017433948030936106,
   0.009143190985861756,
   0.012133516280499421,
@@ -224,7 +225,7 @@ static float LP_20_240_filter_taps[] = {
 };
 
 
-static int LPFilter_init(Filter_t *filter, float *tap_array, unsigned tap_list_size) 
+static int LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_list_size) 
 {
    if (filter == NULL) ERR(-1, "Invalid filter descriptor");
    if (tap_array == NULL || tap_list_size == 0) ERR(-1, "Invalid tap array for filter");
@@ -240,20 +241,6 @@ static int LPFilter_init(Filter_t *filter, float *tap_array, unsigned tap_list_s
 static void LPFilter_close(Filter_t *filter) 
 {
    if (filter->history) free(filter->history);
-}
-
-
-static void LPFilter_setDCgain(Filter_t *filter, float gain_value)
-{
-int i;
-float DC_gain = 0;  
-
-   if (filter == NULL) ERR(, "Invalid filter descriptor");
-   // Calculate current DC gain
-   for (i = 0; i < filter->taps_num; i++) DC_gain += filter->taps[i];
-   if (DC_gain == 0) ERR(, "DC gain of filter is zero, cannot set gain");
-   // Now, change taps so that the new DC gain is 'gain_value'
-   for (i = 0; i < filter->taps_num; i++) filter->taps[i] *= gain_value/DC_gain;     
 }
 
 
@@ -463,6 +450,7 @@ uint8_t byte;
    /***** Initial checks *****/
    assert(odr_ag_modes[ODR_AG] > odr_m_modes[ODR_M]);
    upsampling_factor = lroundf(odr_ag_modes[ODR_AG] / odr_m_modes[ODR_M]);
+   printf("Interpolation factor: %d\n", upsampling_factor);
    
    // Check acelerometer/gyroscope   
    rc = i2cWriteReadBytes(accel_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
@@ -621,8 +609,6 @@ uint8_t byte;
    if (rc < 0) goto init_error;    
    LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
    if (rc < 0) goto init_error; 
-   // Set gain to upsampling_factor, to compensate for DC gain reduction due to interpolation
-   LPFilter_setDCgain(&filter_mx, upsampling_factor);  // No need for filter_my and filter_mz, as they share the LP_20_240_filter_taps
    
    /*
    // Initialize low pass filter for accelerometer data
@@ -640,7 +626,7 @@ uint8_t byte;
    */
    
    // Start the IMU reading timer
-   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add 20% margin
+   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.1);  // Read IMU with a period of magnetometer ODR, add margin
    esp_timer_handle_t timer;
    const esp_timer_create_args_t timer_args = {
             .dispatch_method = ESP_TIMER_TASK,
@@ -734,7 +720,6 @@ float axr, ayr, azr;
 float gxr, gyr, gzr;
 float mxr, myr, mzr; 
 //float axrf, ayrf, azrf; // values after LPF
-float mxrf, myrf, mzrf; // values after LPF
 //float daxr;
 
    start_tick = esp_timer_get_time();
@@ -792,25 +777,25 @@ float mxrf, myrf, mzrf; // values after LPF
       ax -= err_AL[0]; ay -= err_AL[1]; az -= err_AL[2]; 
       gx -= err_GY[0]; gy -= err_GY[1]; gz -= err_GY[2]; 
 
-      /* Store real values in float variables */
+      /* Store real values in float variables, apply scaling */
       axr = ax*aRes; ayr = ay*aRes; azr = az*aRes;      
       gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;  
 
       /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
       First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
       eliminate the spectral replica of the original signal. This interpolates the values. */
-      if (samples_count++%upsampling_factor == 0) {  // After the 0-valued samples, feed the real magnetometer value 
-         LPFilter_put(&filter_mx, mxr); LPFilter_put(&filter_my, myr); LPFilter_put(&filter_mz, mzr);  
+      if (samples_count++%upsampling_factor == 0) {  // After the 0-valued samples, feed the magnetometer value we just read
+         LPFilter_put(&filter_mx, mxr); LPFilter_put(&filter_my, myr); LPFilter_put(&filter_mz, mzr);
       }
       else {  // Introduce 0-valued samples to align both ODR
          LPFilter_put(&filter_mx, 0); LPFilter_put(&filter_my, 0); LPFilter_put(&filter_mz, 0);         
       }
-      // Take output of the filter
-      mxrf = LPFilter_get(&filter_mx); myrf = LPFilter_get(&filter_my); mzrf = LPFilter_get(&filter_mz);
-      
+      // Take output of the interpolation filter
+      // Multiply by upsampling_factor, to compensate for DC gain reduction due to interpolation
+      mxr = LPFilter_get(&filter_mx)*upsampling_factor; myr = LPFilter_get(&filter_my)*upsampling_factor; mzr = LPFilter_get(&filter_mz)*upsampling_factor;
       
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
-      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
+      printOrientation(axr, ayr, azr, mxr, myr, mzr);
    
    
    
