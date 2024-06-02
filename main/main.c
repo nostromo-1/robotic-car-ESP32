@@ -118,7 +118,6 @@ Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and
 #define DISTMIN 45           /* distancia en cm a la que entendemos que hay un obstáculo */
 #define INITIAL_SPEED 50     /* Entre 0 y 100% */
 #define SONARDELAY 50        /* Time in ms between sonar triggers */
-#define NUMPOS 3             /* Número de medidas de posición del sonar para promediar */
 #define NUMPULSES (16*120)   /* Motor assumed is a DFRobot FIT0450 with encoder. 16 pulses per round, 1:120 gearbox */
 #define WHEELD 68            /* Wheel diameter in mm */
 #define KARRDELAY 150        /* Time in ms to wait between leds in KARR scan */
@@ -759,16 +758,15 @@ void app_main(void)
 void TaskUltrasonic(void *pvParameters)
 {
 TickType_t xDelay = (TickType_t)pvParameters;
-int64_t tick, referenceTick = 0;
+int64_t tick, reference_tick;
 uint32_t stalledTime;
 const uint32_t maxStalledTime = 1200*1e3;  // Time in microseconds to flag car as stopped (it does not change its distance)
-uint32_t distance_array[NUMPOS], pos_array = 0;
 
-int32_t previous_distance = 0, reference_distance = 0;
+int32_t distance_local, previous_distance, reference_distance;  // Must be signed value
 static const char displayText[] = "Dist (cm):";
-int32_t suma, distance_local;
 bool is_stalled;
-int firstTime = 0;
+bool firstTime = true;
+const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
 
     TickType_t xWakeTime = xTaskGetTickCount();
     for (;;) {
@@ -778,33 +776,24 @@ int firstTime = 0;
         tick = esp_timer_get_time();
         if (ultrasonic_measure_cm(&sonarHCSR04, &dist) != ESP_OK) continue;
         
-        distance_array[pos_array++] = dist;  // sonar measured distance in cm
-        if (pos_array == NUMPOS) pos_array = 0;
-        
-        if (firstTime>=0) {
-            if (firstTime < NUMPOS) { /* The first NUMPOS times until array is filled */
-               firstTime++;
-               continue;
-            } else {
-               firstTime = -1;  /* Initialisation of distance_array is over */
-               referenceTick = tick;  // Reference for stalled time calculation
-               oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
-            }
+        if (firstTime) {
+            firstTime = false;
+            reference_tick = tick;  // Reference for stalled time calculation
+            reference_distance = dist;
+            previous_distance = dist;
+            oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
+            continue;
         }
- 
-        /* Calculate moving average */
-        suma = 0;
-        for (int i=0; i<NUMPOS; i++) suma += distance_array[i]; 
-        sonarHCSR04.distance = suma/NUMPOS; 
-
+        
+        // Apply a lowpass filter (IIR filter, complementary filter)
+        distance_local = sonarHCSR04.distance = (alpha*dist + (100-alpha)*previous_distance)/100;
+        
         /* Set global variable "distance", this is the only producer */
         WRITE_ATOMIC(distance, sonarHCSR04.distance);
-        distance_local = sonarHCSR04.distance; // local copy of variable
-        if (referenceTick == tick) reference_distance = distance_local;  // Will only happen once, at the beginning
         
         /* Update display if distance changed since last reading */
         if (distance_local != previous_distance) {
-            char str[6];
+            char str[9];
             snprintf(str, sizeof(str), "%-3lu", distance_local);
             oledWriteString(8*sizeof(displayText), 0, str, false);  // update only distance number
             previous_distance = distance_local;
@@ -813,11 +802,11 @@ int firstTime = 0;
         /* If car should be moving, look at change in distance to object since reference was taken; 
            if distance change is small, compute time passed as stalled, otherwise, reset values */
         if ((m_izdo.velocidad || m_dcho.velocidad) && abs(reference_distance - distance_local)<=2) {
-           stalledTime = tick - referenceTick;
+           stalledTime = tick - reference_tick;
         }
         else {
             stalledTime = 0;
-            referenceTick = tick;
+            reference_tick = tick;
             reference_distance = distance_local;
         }
         

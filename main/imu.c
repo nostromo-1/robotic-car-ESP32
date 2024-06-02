@@ -318,7 +318,7 @@ const float alpha = 0.05;
    sinpitch = -ax/rootaxayaz;
    cospitch = rootayaz/rootaxayaz;
    
-   // now, calculate yaw
+   /*********** Calculate yaw *************/
    // yaw angle able to range between -180 and 180, positive westwardss
    yaw = atan2f(mz*sinroll-my*cosroll, mx*cospitch+my*sinpitch*sinroll+mz*sinpitch*cosroll);
    
@@ -718,7 +718,10 @@ static unsigned int samples_count, count, collision_sample;
 /* Real (scaled and compensated) readings of the sensors */
 float axr, ayr, azr;
 float gxr, gyr, gzr;
-float mxr, myr, mzr; 
+float mxr, myr, mzr;
+float mxrf, myrf, mzrf; // After filter
+static float o_mxrf, o_myrf, o_mzrf; // Previous values
+static bool firstTime = true;
 //float axrf, ayrf, azrf; // values after LPF
 //float daxr;
 
@@ -733,6 +736,10 @@ float mxr, myr, mzr;
    if (rc == 0) {
       ESP_LOGI(TAG, "No magnetometer data");
       return;  // No magnetometer data yet
+   }
+   if (firstTime) {
+      o_mxrf = mxr; o_myrf = myr; o_mzrf = mzr;
+      firstTime = false;
    }
    //if (!(count++%10)) printHeading(mxr, myr);
    // snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrt(mxr*mxr+myr*myr+mzr*mzr));  
@@ -783,19 +790,21 @@ float mxr, myr, mzr;
 
       /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
       First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
-      eliminate the spectral replica of the original signal. This interpolates the values. */
-      if (samples_count++%upsampling_factor == 0) {  // After the 0-valued samples, feed the magnetometer value we just read
-         LPFilter_put(&filter_mx, mxr); LPFilter_put(&filter_my, myr); LPFilter_put(&filter_mz, mzr);
+      eliminate the spectral replica of the original signal. This interpolates the values.
+      The low pass filter is implemented as a complementary filter. */
+      const float alpha = 0.02;  // This achieves a rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
+      if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter
+         mxrf = alpha*mxr + (1-alpha)*o_mxrf; myrf = alpha*myr + (1-alpha)*o_myrf; mzrf = alpha*mzr + (1-alpha)*o_mzrf;
       }
-      else {  // Introduce 0-valued samples to align both ODR
-         LPFilter_put(&filter_mx, 0); LPFilter_put(&filter_my, 0); LPFilter_put(&filter_mz, 0);         
+      else { // Insert zeros as input in filter (mxr=0, etc)
+         mxrf = (1-alpha)*o_mxrf; myrf = (1-alpha)*o_myrf; mzrf = (1-alpha)*o_mzrf;  
       }
-      // Take output of the interpolation filter
-      // Multiply by upsampling_factor, to compensate for DC gain reduction due to interpolation
-      mxr = LPFilter_get(&filter_mx)*upsampling_factor; myr = LPFilter_get(&filter_my)*upsampling_factor; mzr = LPFilter_get(&filter_mz)*upsampling_factor;
+      o_mxrf = mxrf; o_myrf = myrf; o_mzrf = mzrf;  // Remember these output values for next sample
       
+      mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
-      printOrientation(axr, ayr, azr, mxr, myr, mzr);
+      //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
+      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
    
    
    
