@@ -543,6 +543,7 @@ const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
 int setup(void)
 {
 int rc;
+uint32_t voltage, current, battery1;
    
    i2c_master_init(); 
    if (oledInit(DISPLAY_I2C)) return 1;
@@ -554,17 +555,16 @@ int rc;
    vTaskDelay(pdMS_TO_TICKS(500));
    
    if (setupPCF8591(PCF8591_I2C)) return 1;
-   readPowerSupply();
-   float voltage = getSupplyVoltage();
-   if (voltage < 6.2) {
-      ESP_LOGE(TAG, "Power supply too low (%.1fV). Aborting start.", voltage);
+   readPowerSupply(&voltage, &battery1, &current);
+   if (voltage < 6200) {
+      ESP_LOGE(TAG, "Power supply too low (%ld mV). Aborting start.", voltage);
       return 1;
    }
    
    // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
-   if (getSupplyVoltage() >= 6.6) {  // Only start wifi if power supply is OK
+   if (voltage >= 6600) {  // Only start wifi if power supply is OK
       bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
       rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
       if (rc == 0) {
@@ -694,8 +694,8 @@ void app_main(void)
    ESP32Wiimote_setPlayerLEDs(LEDs[velocidadCoche/26]);
  
    // Check if battery low; -1 means that the ADC does not work correctly
-   float volts = getSupplyVoltage();  
-   if (volts < 6.6) {
+   uint32_t volts = getSupplyVoltage();  
+   if (volts < 6600) {
       oledBigMessage(0, "Battery!");
       audioplay("/spiffs/batterylow.wav", 1);
       oledBigMessage(0, NULL);           
@@ -915,8 +915,8 @@ void TaskCheckPower(void *pvParameters)
 TickType_t xDelay = (TickType_t)pvParameters;
 static const uint8_t empty_battery[] = {0, 254, 130, 131, 131, 130, 254, 0};  // glyph for empty battery
 uint8_t battery_glyph[sizeof(empty_battery)];
-float voltage, current, battery1, battery2;
-char str[OLED_MAX_LINE_SIZE];
+uint32_t voltage, current, battery1, battery2;
+char str[OLED_MAX_LINE_SIZE+5];  // Add 5 so compiler does not complain
 char str_old[sizeof(str)] = {0};
 int8_t step, old_step = -1;
 const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered
@@ -926,17 +926,15 @@ int64_t previousTick, tick;
    previousTick = esp_timer_get_time();
    for (;;) { // A Task shall never return or exit
       vTaskDelay(pdMS_TO_TICKS(xDelay));  
-      readPowerSupply();
-      voltage = getSupplyVoltage();
-      current = getSupplyCurrent();
-      battery1 = getSupplyBattery1();
+      // Get values, in mV and mA
+      readPowerSupply(&voltage, &battery1, &current);
       battery2 = voltage - battery1;
       
-      if (voltage < 6.2) step = 0;        // Battery at 0%
-      else if (voltage < 6.6) step = 64;  // Battery at 20%
-      else if (voltage < 7.0) step = 64+32;      // Battery at 40%  
-      else if (voltage < 7.4) step = 64+32+16;   // Battery at 60%
-      else if (voltage < 7.8) step = 64+32+16+8; // Battery at 80%
+      if (voltage < 6200) step = 0;        // Battery at 0%
+      else if (voltage < 6600) step = 64;  // Battery at 20%
+      else if (voltage < 7000) step = 64+32;      // Battery at 40%  
+      else if (voltage < 7400) step = 64+32+16;   // Battery at 60%
+      else if (voltage < 7800) step = 64+32+16+8; // Battery at 80%
       else step = 64+32+16+8+4;  // Battery at 100%
    
       memcpy(battery_glyph, empty_battery, sizeof(empty_battery));
@@ -955,7 +953,13 @@ int64_t previousTick, tick;
       if (step <= 64) oledSetBitmap8x8(14*8, 0, (n++ & 1)?battery_glyph:NULL);
     
       // Update display only if values changed (it is a slow operation)
-      snprintf(str, sizeof(str), "%.1fV %.2fA", voltage, current);
+      voltage += 50;  // 1 digit after decimal, round to nearest integer
+      uint8_t volts = voltage/1000;
+      uint8_t decivolts = (voltage-volts*1000)/100;  
+      current += 5;   // 2 digits after decimal, round to nearest integer
+      uint8_t amps = current/1000;
+      uint8_t centiamps = (current-amps*1000)/10;     
+      snprintf(str, sizeof(str), "%u.%uV %u.%02uA", volts, decivolts, amps, centiamps);
       if (strcmp(str, str_old)) {
          oledWriteString(0, 1, str, false);
          strcpy(str_old, str);
@@ -963,7 +967,7 @@ int64_t previousTick, tick;
 
       // Shutdown if voltage is too low for a long period
       tick = esp_timer_get_time();
-      if (battery1 < 2.9 || battery2 < 2.9) underVoltageTime += (tick-previousTick)/1000;
+      if (battery1 < 2900 || battery2 < 2900) underVoltageTime += (tick-previousTick)/1000;
       else underVoltageTime = 0;
       if (underVoltageTime >= maxUndervoltageTime) {  
          oledBigMessage(0, "Battery!");   

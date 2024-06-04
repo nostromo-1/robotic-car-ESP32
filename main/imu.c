@@ -804,7 +804,7 @@ static bool firstTime = true;
       mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
-      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
+      //printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
    
    
    

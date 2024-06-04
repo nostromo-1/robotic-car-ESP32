@@ -28,7 +28,7 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 
 static const char* TAG = __FILE__;
 static uint8_t chipAddr;
-static float voltage, current, battery1;
+static uint32_t voltage_global;
 
 
 // 3.3 is the voltage reference (+-1%), 255 are the steps (8 bits ADC resolution)
@@ -36,10 +36,10 @@ static float voltage, current, battery1;
 // Accuracy: about 13 mV (3.3/255) quantisation error due to ADC, times 2.82 (resistors), 
 // which is a total error of about +-18 mV (+-13/2*2.82)
 // Max. allowed voltage value: 9.3 V
-static const float factor_v = 3.3/255*(22000+12100)/12100; 
+static const uint32_t factor_v = (3300*(22000+12100)/12100/255 + 0.5); 
 
 // ADC#3 is connected to the middle point of the battery pack, via 2 22k precision (1%) resistors
-static const float factor_v2 = 3.3/255*2; 
+static const uint32_t factor_v2 = (3300*2/255 + 0.5); 
 
 // 1100 and 100 are the precision (1%) resistors in the current sensing circuit connected to ADC#1
 // 0.1 is the sensing resistor (1%)
@@ -47,7 +47,7 @@ static const float factor_v2 = 3.3/255*2;
 // Accuracy: 6 mA due to offset voltage in opamp (600 uV in NPN stage, thus 0.6 mV/0.1) 
 // plus 12 mA due to ADC error (13 mV/1.1), which is a total error of about +-9 mA
 // Max. allowed current value: 3 A
-static const float factor_i = 3.3/255/(0.1*1100/100);  
+static const uint32_t factor_i = (3300/(0.1*1100/100)/255 + 0.5);  
 
 
 int setupPCF8591(uint8_t addr)
@@ -66,7 +66,6 @@ uint8_t buf[2];
    // Read previous conversion and ignore it
    rc = i2c_master_read_from_device(I2C_BUS, addr, buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);        
    if (rc != ESP_OK) goto rw_error;  
-   
    chipAddr = addr;
    return 0;
    
@@ -76,32 +75,19 @@ rw_error:
 }
 
 
-
-float getSupplyVoltage(void)
+uint32_t getSupplyVoltage(void)
 {
-   return voltage;
+   return voltage_global;
 }
 
 
-float getSupplyBattery1(void)
-{
-   return battery1;
-}
-
-
-float getSupplyCurrent(void)
-{
-   return current;
-}
-
-
-/* 
+/**
 This function gets called at fixed intervals
 Voltage: It reads the ADC#0, connected to the main power supply (max voltage is 9.3V).
 Current: It reads the ADC#1, connected to a current sensing circuit (max current is 3A). 
 Low currents (in tens of mA) are overestimated.
-*/
-void readPowerSupply(void)
+**/
+void readPowerSupply(uint32_t *voltage, uint32_t *battery1, uint32_t *current)
 {
 uint8_t adc[4];  // Store ADC values
 esp_err_t ret;
@@ -118,12 +104,12 @@ esp_err_t ret;
    ret = i2c_master_read_from_device(I2C_BUS, chipAddr, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
    if (ret != ESP_OK) goto rw_error;  
 
-   voltage = factor_v*adc[2];  // Battery voltage level, channel 0
-   current = factor_i*adc[3];  // Current draw, channel 1
+   voltage_global = *voltage = factor_v*adc[2];  // Battery voltage level, channel 0
+   *current = factor_i*adc[3];  // Current draw, channel 1
    if (adc[1]>10)   // channel 3, if there is a non-zero reading, a cable is connected at the mid-battery point
-      battery1 = factor_v2*adc[1];  // Voltage level at the middle of the battey pack (1 18650 if 2 in series are used)
+      *battery1 = factor_v2*adc[1];  // Voltage level at the middle of the battey pack (1 18650 if 2 in series are used)
    else  // if voltage is too low, it means cable is not connected
-      battery1 = voltage/2;  // if mid-point cable is not connected, assume this is half the battery voltage
+      *battery1 = *voltage/2;  // if mid-point cable is not connected, assume this is half the battery voltage
    
    return;
    
