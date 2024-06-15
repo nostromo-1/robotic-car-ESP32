@@ -18,9 +18,11 @@ It can also download a new firmware version from github
 #include "esp_wifi.h"
 #include "esp_wps.h"
 #include "esp_netif_sntp.h"
+#include "esp_vfs.h"
+#include "esp_http_client.h"
+#include "esp_http_server.h"
 
 #include "esp_ota_ops.h"
-#include "esp_http_client.h"
 #include "esp_https_ota.h"
 
 #include "oled96.h"
@@ -435,5 +437,61 @@ int init_wifi_network(bool do_wps)
     return 0;  // NTP error is not a reason for failure
 }
 
+
+
+static esp_err_t file_get_handler(httpd_req_t *req)
+{
+   char filepath[ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN];
+   static const char *file_extension = ".dat";
+   
+   size_t len = strlen(req->uri);
+   if (len > ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN - 1) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
+      return ESP_FAIL;
+   }
+   snprintf(filepath, sizeof(filepath), "%s", req->uri);
+   if (len<=strlen(file_extension) || strcmp(filepath+len-strlen(file_extension), file_extension)!=0) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Only .dat files allowed");
+      return ESP_FAIL;     
+   }
+
+   FILE *file = fopen(filepath, "r");
+   if (!file) {
+      httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+      return ESP_FAIL;
+   }
+
+   char line[64];
+   httpd_resp_set_type(req, "text/plain");
+   while (fgets(line, sizeof(line), file)) {
+      httpd_resp_send_chunk(req, line, strlen(line));
+   }
+   httpd_resp_send_chunk(req, NULL, 0);
+   fclose(file);
+   return ESP_OK;
+}
+
+
+/* Start file server. It allows to read the contents of text .dat files to a web browser */
+httpd_handle_t start_webserver(void)
+{
+   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+   /* Use the URI wildcard matching function in order to
+    * allow the same handler to respond to multiple different
+    * target URIs which match the wildcard scheme */
+   config.uri_match_fn = httpd_uri_match_wildcard;
+    
+   httpd_handle_t server = NULL;
+   if (httpd_start(&server, &config) == ESP_OK) {
+       httpd_uri_t file_uri = {
+           .uri = "/spiffs/*",
+           .method = HTTP_GET,
+           .handler = file_get_handler,
+           .user_ctx = NULL
+       };
+       httpd_register_uri_handler(server, &file_uri);
+   }
+   return server;
+}
 
 

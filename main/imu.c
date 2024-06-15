@@ -791,7 +791,7 @@ static bool firstTime = true;
       /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
       First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
       eliminate the spectral replica of the original signal. This interpolates the values.
-      The low pass filter is implemented as a complementary filter. */
+      The low pass filter is implemented as a single pole IIR filter. */
       const float alpha = 0.02;  // This achieves a rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
       if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter
          mxrf = alpha*mxr + (1-alpha)*o_mxrf; myrf = alpha*myr + (1-alpha)*o_myrf; mzrf = alpha*mzr + (1-alpha)*o_mzrf;

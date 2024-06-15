@@ -9,5 +9,5 @@ set(PROJECT_VER "0.3.1")
 project(robotic-car)
 
 idf_build_set_property(COMPILE_OPTIONS "-Wno-unused-variable" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-format-truncation" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-fsingle-precision-constant" APPEND)
-

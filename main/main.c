@@ -1,4 +1,5 @@
-/**************************************************************************
+/************************************************************************+*
+
 Main file of robotic car project.
 This is a ESP32 port of the original Raspberry Pi project.
 
@@ -26,7 +27,6 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_psram.h"
-
 
 #include "wiimote.h"
 #include "oled96.h"
@@ -566,10 +566,11 @@ uint32_t voltage, current, battery1;
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
    if (voltage >= 6600) {  // Only start wifi if power supply is OK
       bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
-      rc = init_wifi_network(do_wps);   // Starts WPS if mando.scan_pin is pressed when starting wifi
-      if (rc == 0) {
+      rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
+      if (rc == 0) {   // wifi is up
          oledClear();
-         get_ota_firmware();  // If wifi is up, try to get new firmware version
+         get_ota_firmware();  // Try to get new firmware version
+         start_webserver();   // Start file server of spiffs filesystem
          esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
       }
       oledClear();
@@ -610,6 +611,7 @@ uint32_t voltage, current, battery1;
 }
 
 
+
 void init_CPU(void)
 {
 esp_chip_info_t chip_info;
@@ -627,7 +629,7 @@ esp_err_t ret;
    esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "storage",
-        .max_files = 3,
+        .max_files = 3,   // Maximum files that could be open at the same time
         .format_if_mount_failed = false
    };
    
@@ -641,6 +643,16 @@ esp_err_t ret;
           ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
        }
       esp_system_abort(NULL);  
+   }
+
+   size_t total, used;
+   ret = esp_spiffs_info(conf.partition_label, &total, &used);
+   if (ret != ESP_OK) {
+       ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+       esp_system_abort(NULL);
+       return;
+   } else {
+       ESP_LOGI(TAG, "Size of partition '%s': total: %d, used: %d", conf.partition_label, total, used);
    }
    
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -916,7 +928,7 @@ TickType_t xDelay = (TickType_t)pvParameters;
 static const uint8_t empty_battery[] = {0, 254, 130, 131, 131, 130, 254, 0};  // glyph for empty battery
 uint8_t battery_glyph[sizeof(empty_battery)];
 uint32_t voltage, current, battery1, battery2;
-char str[OLED_MAX_LINE_SIZE+5];  // Add 5 so compiler does not complain
+char str[OLED_MAX_LINE_SIZE];
 char str_old[sizeof(str)] = {0};
 int8_t step, old_step = -1;
 const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered
