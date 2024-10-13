@@ -36,10 +36,10 @@ static uint32_t voltage_global;
 // Accuracy: about 13 mV (3.3/255) quantisation error due to ADC, times 2.82 (resistors), 
 // which is a total error of about +-18 mV (+-13/2*2.82)
 // Max. allowed voltage value: 9.3 V
-static const uint32_t factor_v = (3300*(22000+12100)/12100/255 + 0.5); 
+static const uint32_t factor_v = 3300*(22000+12100)/12100/255 + 0.5;   // Adding 0.5 rounds to the nearest integer
 
 // ADC#3 is connected to the middle point of the battery pack, via 2 22k precision (1%) resistors
-static const uint32_t factor_v2 = (3300*2/255 + 0.5); 
+static const uint32_t factor_v2 = 3300*2/255 + 0.5; 
 
 // 1100 and 100 are the precision (1%) resistors in the current sensing circuit connected to ADC#1
 // 0.1 is the sensing resistor (1%)
@@ -47,7 +47,7 @@ static const uint32_t factor_v2 = (3300*2/255 + 0.5);
 // Accuracy: 6 mA due to offset voltage in opamp (600 uV in NPN stage, thus 0.6 mV/0.1) 
 // plus 12 mA due to ADC error (13 mV/1.1), which is a total error of about +-9 mA
 // Max. allowed current value: 3 A
-static const uint32_t factor_i = (3300/(0.1*1100/100)/255 + 0.5);  
+static const uint32_t factor_i = 3300/(0.1*1100/100)/255 + 0.5;  
 
 
 int setupPCF8591(uint8_t addr)
@@ -62,7 +62,7 @@ uint8_t buf[2];
    if (rc != ESP_OK) goto rw_error;  
    
    vTaskDelay(pdMS_TO_TICKS(10));   // Does not read correctly without delay
-   
+
    // Read previous conversion and ignore it
    rc = i2c_master_read_from_device(I2C_BUS, addr, buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);        
    if (rc != ESP_OK) goto rw_error;  
@@ -75,6 +75,7 @@ rw_error:
 }
 
 
+// Get supply voltage in mV
 uint32_t getSupplyVoltage(void)
 {
    return voltage_global;
@@ -84,7 +85,9 @@ uint32_t getSupplyVoltage(void)
 /**
 This function gets called at fixed intervals
 Voltage: It reads the ADC#0, connected to the main power supply (max voltage is 9.3V).
-Current: It reads the ADC#1, connected to a current sensing circuit (max current is 3A). 
+Current: It reads the ADC#1, connected to a current sensing circuit (max current is 3A).
+Battery1: It reads the ADC#3, connected to the first half of the main power supply (max voltage is 4.65V).
+If battery1 is nor connected, it is assumed to be half of main voltage.
 Low currents (in tens of mA) are overestimated.
 **/
 void readPowerSupply(uint32_t *voltage, uint32_t *battery1, uint32_t *current)
@@ -102,12 +105,12 @@ esp_err_t ret;
       are triggered and read in this function call, no delay between both
    */
    ret = i2c_master_read_from_device(I2C_BUS, chipAddr, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (ret != ESP_OK) goto rw_error;  
+   if (ret != ESP_OK) goto rw_error;
 
    voltage_global = *voltage = factor_v*adc[2];  // Battery voltage level, channel 0
    *current = factor_i*adc[3];  // Current draw, channel 1
-   if (adc[1]>10)   // channel 3, if there is a non-zero reading, a cable is connected at the mid-battery point
-      *battery1 = factor_v2*adc[1];  // Voltage level at the middle of the battey pack (1 18650 if 2 in series are used)
+   if (adc[1]>30)   // channel 3, if there is a non-zero reading, a cable is connected at the mid-battery point
+      *battery1 = factor_v2*adc[1];  // Voltage level at the middle of the battey pack (first 18650 if two in series are used)
    else  // if voltage is too low, it means cable is not connected
       *battery1 = *voltage/2;  // if mid-point cable is not connected, assume this is half the battery voltage
    

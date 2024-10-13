@@ -50,7 +50,7 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 
 #define ERR(ret, format, arg...)                                       \
    {                                                                   \
-         ESP_LOGE(TAG, "%s: " format "\n" , __func__ , ## arg);        \
+         ESP_LOGE(TAG, "%s: " format, __func__ , ## arg);        \
          return ret;                                                   \
    }
 
@@ -721,7 +721,6 @@ float gxr, gyr, gzr;
 float mxr, myr, mzr;
 float mxrf, myrf, mzrf; // After filter
 static float o_mxrf, o_myrf, o_mzrf; // Previous values
-static bool firstTime = true;
 //float axrf, ayrf, azrf; // values after LPF
 //float daxr;
 
@@ -737,10 +736,7 @@ static bool firstTime = true;
       ESP_LOGI(TAG, "No magnetometer data");
       return;  // No magnetometer data yet
    }
-   if (firstTime) {
-      o_mxrf = mxr; o_myrf = myr; o_mzrf = mzr;
-      firstTime = false;
-   }
+
    //if (!(count++%10)) printHeading(mxr, myr);
    // snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrt(mxr*mxr+myr*myr+mzr*mzr));  
    // oledWriteString(0, 6, str, false);  
@@ -804,7 +800,7 @@ static bool firstTime = true;
       mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
-      //printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
+      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
    
    
    

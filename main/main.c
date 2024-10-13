@@ -53,6 +53,20 @@ This is a ESP32 port of the original Raspberry Pi project.
 #define READ_ATOMIC(var) atomic_load_explicit(&var, memory_order_acquire)
 #define WRITE_ATOMIC(var,value) atomic_store_explicit(&var, value, memory_order_release)
 
+#define max(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a > _b ? _a : _b;       \
+})
+
+#define min(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a < _b ? _a : _b;       \
+})
+
 
 #define I2C0_SCL_IO       22          /* GPIO number used for I2C0 master clock */
 #define I2C0_SDA_IO       21          /* GPIO number used for I2C0 master data  */
@@ -556,7 +570,7 @@ uint32_t voltage, current, battery1;
    
    if (setupPCF8591(PCF8591_I2C)) return 1;
    readPowerSupply(&voltage, &battery1, &current);
-   if (voltage < 6200) {
+   if (voltage < 6000) {
       ESP_LOGE(TAG, "Power supply too low (%ld mV). Aborting start.", voltage);
       return 1;
    }
@@ -564,17 +578,15 @@ uint32_t voltage, current, battery1;
    // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
-   if (voltage >= 6600) {  // Only start wifi if power supply is OK
-      bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
-      rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
-      if (rc == 0) {   // wifi is up
-         oledClear();
-         get_ota_firmware();  // Try to get new firmware version
-         start_webserver();   // Start file server of spiffs filesystem
-         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
-      }
-      oledClear();
+   bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
+   rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
+   oledClear();
+   if (rc == 0) {   // wifi is up
+      if (voltage > 7000) get_ota_firmware();  // Only if enough power supply: try to get new firmware version. If successful, it restars the CPU
+      start_webserver();   // Start file server of spiffs filesystem
+      esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
    }
+   
    // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
    if (wav_queue == NULL) return 1;
@@ -600,9 +612,11 @@ uint32_t voltage, current, battery1;
    gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
    gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
+   /*
    if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C) == 0) { // Setup IMU sensor
       use_IMU = true;   
    }
+   */
    oledSetInversion(false); // clear display
    
    if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
@@ -623,7 +637,6 @@ esp_err_t ret;
       ESP_LOGE(TAG, "Bluetooth system not present. Shutting down");
       esp_system_abort(NULL);   // Shutdown chip
    }
-   //printf("Number of cores=%u\n", chip_info.cores);  
       
    /* Mount filesystem */
    esp_vfs_spiffs_conf_t conf = {
@@ -657,9 +670,12 @@ esp_err_t ret;
    
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
    esp_sleep_config_gpio_isolate();
+   esp_log_level_set("gpio", ESP_LOG_WARN);
    esp_log_level_set("wifi", ESP_LOG_WARN);  // Avoid those many info messages
    esp_log_level_set("wifi_init", ESP_LOG_WARN); 
    esp_log_level_set("esp_https_ota", ESP_LOG_WARN);
+   esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+   esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
    
    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED));  // For GPIO interrupts, add handler with gpio_isr_handler_add
    
@@ -705,7 +721,7 @@ void app_main(void)
    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for tasks to activate
    ESP32Wiimote_setPlayerLEDs(LEDs[velocidadCoche/26]);
  
-   // Check if battery low; -1 means that the ADC does not work correctly
+   // Check if battery low
    uint32_t volts = getSupplyVoltage();  
    if (volts < 6600) {
       oledBigMessage(0, "Battery!");
@@ -722,6 +738,7 @@ void app_main(void)
       Main loop. It sleeps until a problem is found. During sleep, the car is controlled by the wiimote.
       After awakening, it solves the problem, and goes back to sleep.
    ******/
+   
    for (;;) {
       WiimoteButton_t buttons;  
       
@@ -936,33 +953,30 @@ uint32_t underVoltageTime = 0, n = 0;
 int64_t previousTick, tick;
    
    previousTick = esp_timer_get_time();
-   for (;;) { // A Task shall never return or exit
-      vTaskDelay(pdMS_TO_TICKS(xDelay));  
-      // Get values, in mV and mA
-      readPowerSupply(&voltage, &battery1, &current);
-      battery2 = voltage - battery1;
-      
-      if (voltage < 6200) step = 0;        // Battery at 0%
-      else if (voltage < 6600) step = 64;  // Battery at 20%
-      else if (voltage < 7000) step = 64+32;      // Battery at 40%  
-      else if (voltage < 7400) step = 64+32+16;   // Battery at 60%
-      else if (voltage < 7800) step = 64+32+16+8; // Battery at 80%
+   for (;;) { // A Task shall never return or exit  
+      readPowerSupply(&voltage, &battery1, &current);  // Read values in mV and mA
+      battery2 = voltage - battery1;  // Attention: with the current HW, v-bat1 is not bat2 exactly, the error is too big (ca. 150 mV)
+
+      if (voltage < 2*3330) step = 0;        // Battery at 0%
+      else if (voltage < 2*3510) step = 64;  // Battery at 20%
+      else if (voltage < 2*3620) step = 64+32;      // Battery at 40%  
+      else if (voltage < 2*3770) step = 64+32+16;   // Battery at 60%
+      else if (voltage < 2*4000) step = 64+32+16+8; // Battery at 80%
       else step = 64+32+16+8+4;  // Battery at 100%
-   
-      memcpy(battery_glyph, empty_battery, sizeof(empty_battery));
-      battery_glyph[2] += step;
-      battery_glyph[3] += step;
-      battery_glyph[4] = battery_glyph[3];
-      battery_glyph[5] = battery_glyph[2]; 
 
       // If battery state changed, update battery symbol on display
-      if (step != old_step) {    
+      if (step != old_step) {
+         memcpy(battery_glyph, empty_battery, sizeof(empty_battery));
+         battery_glyph[2] += step;
+         battery_glyph[3] += step;
+         battery_glyph[4] = battery_glyph[3];
+         battery_glyph[5] = battery_glyph[2]; 
          oledSetBitmap8x8(14*8, 0, battery_glyph);  
          old_step = step;
       }
    
       // Symbol blinks when battery low
-      if (step <= 64) oledSetBitmap8x8(14*8, 0, (n++ & 1)?battery_glyph:NULL);
+      if (step == 0) oledSetBitmap8x8(14*8, 0, (n++ & 1)?battery_glyph:NULL);
     
       // Update display only if values changed (it is a slow operation)
       voltage += 50;  // 1 digit after decimal, round to nearest integer
@@ -984,9 +998,14 @@ int64_t previousTick, tick;
       if (underVoltageTime >= maxUndervoltageTime) {  
          oledBigMessage(0, "Battery!");   
          oledBigMessage(1, "SHUTDOWN");
+         //vTaskSuspendAll();
+         gpio_set_level(bocina.pin, 0);
+         fastStopMotor(&m_izdo); fastStopMotor(&m_dcho);
          esp_system_abort("Out of battery");   // Shutdown chip
       }
-      previousTick = tick;         
+      
+      previousTick = tick;  
+      vTaskDelay(pdMS_TO_TICKS(xDelay));      
   }
 }
 

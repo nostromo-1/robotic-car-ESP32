@@ -1,7 +1,8 @@
 /**********
 File network.c
 It takes care of all network issues: wifi set-up, WPS, NTP
-It can also download a new firmware version from github
+It can also download a new firmware version from github.
+It implements a simple file server to read the .dat files in the storage filesystem
 
 ***********/
 
@@ -31,7 +32,7 @@ It can also download a new firmware version from github
 #define OTA_TIMEOUT_MS  5000
 
 
-/* FreeRTOS event group to signal when we are connected*/
+/* FreeRTOS event group to signal when we are connected */
 static EventGroupHandle_t s_wifi_event_group;
 
 /* The event group allows multiple bits for each event, but we only care about two events:
@@ -367,6 +368,7 @@ esp_https_ota_config_t ota_config = {
     }
     oledBigMessage(0, "Firmware");
     oledBigMessage(1, "download");
+    
     // Read firmware file in loop
     while (1) {
         static const uint8_t glyph[] = {0xFF, 0, 0, 0, 0, 0, 0, 0}; 
@@ -391,7 +393,7 @@ esp_https_ota_config_t ota_config = {
     } 
     ota_finish_err = esp_https_ota_finish(https_ota_handle);
     if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
-        ESP_LOGI(TAG, "Firmware update successful. Rebooting ...");
+        ESP_LOGI(TAG, "Firmware update successful. Rebooting...");
         vTaskDelay(1000 / portTICK_PERIOD_MS);
         esp_restart();
     } else {
@@ -445,7 +447,7 @@ static esp_err_t file_get_handler(httpd_req_t *req)
    static const char *file_extension = ".dat";
    
    size_t len = strlen(req->uri);
-   if (len > ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN - 1) {
+   if (len > sizeof(filepath) - 1) {
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
       return ESP_FAIL;
    }
