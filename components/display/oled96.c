@@ -24,23 +24,9 @@ Based on code written by Larry Bank (bitbank@pobox.com)
 
 #define ERR(ret, format, arg...)                                       \
    {                                                                   \
-         ESP_LOGE(TAG, "%s: " format, __func__ , ## arg);              \
+         ESP_LOGE(TAG, "%s: " format, __func__ , ## arg);        \
          return ret;                                                   \
    }
-
-#define max(a,b)             \
-({                           \
-    __typeof__ (a) _a = (a); \
-    __typeof__ (b) _b = (b); \
-    _a > _b ? _a : _b;       \
-})
-
-#define min(a,b)             \
-({                           \
-    __typeof__ (a) _a = (a); \
-    __typeof__ (b) _b = (b); \
-    _a < _b ? _a : _b;       \
-})
    
 
 static const char* TAG = __FILE__;
@@ -224,7 +210,6 @@ int rc;
 // Draw a string of small (8x8) or large (16x24) characters
 // At the given col+row
 // String must have a maximum of 16 characters for small font and 8 for large font
-// If it is longer, it will be truncated
 int oledWriteString(int x, int y, const char *szMsg, bool bLarge)
 {
 int i, j, iLen, rc;
@@ -236,10 +221,11 @@ uint8_t buf[16*8];
     
 	iLen = strlen(szMsg);
 	if (bLarge) {  // draw 16x24 font, 8 characters per line
+        if (iLen>8) ERR(-1, "length of string with large font is over 8 characters");
         for (i=0; i<3; i++) {
             xSemaphoreTake(mutex, portMAX_DELAY); 
             rc = oledSetPosition(x, y+i);
-            for (j = 0; j < min(iLen,8); j++) {
+            for (j=0; j<iLen; j++) {
                 s = &ucFont[9728 + (uint8_t)(szMsg[j]&0x7F)*64];  // 0x7F: large font has only 128 characters
                 memcpy(buf+j*16, s+16*i, 16);
             }
@@ -249,9 +235,10 @@ uint8_t buf[16*8];
         }
 	}
 	else {  // draw 8x8 font, 16 characters per line
+      if (iLen>16) ERR(-1, "length is over 16 characters");
       xSemaphoreTake(mutex, portMAX_DELAY); 
 		rc = oledSetPosition(x, y);
-		for (i = 0; i < min(iLen,16); i++) memcpy(buf+i*8, &ucFont[(uint8_t)szMsg[i]*8], 8);
+		for (i=0; i<iLen; i++) memcpy(buf+i*8, &ucFont[(uint8_t)szMsg[i]*8], 8);
       rc |= oledWriteDataBlock(buf, iLen*8); // write character pattern
       xSemaphoreGive(mutex); 
       if (rc < 0) goto rw_error; 

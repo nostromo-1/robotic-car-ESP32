@@ -570,8 +570,8 @@ uint32_t voltage, current, battery1;
    
    if (setupPCF8591(PCF8591_I2C)) return 1;
    readPowerSupply(&voltage, &battery1, &current);
-   if (voltage < 2*3000) {
-      ESP_LOGE(TAG, "Power supply is too low (%ld mV). Aborting start.", voltage);
+   if (voltage < 6000) {
+      ESP_LOGE(TAG, "Power supply too low (%ld mV). Aborting start.", voltage);
       return 1;
    }
    
@@ -580,8 +580,9 @@ uint32_t voltage, current, battery1;
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
    bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
    rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
+   oledClear();
    if (rc == 0) {   // wifi is up
-      if (voltage > 2*3600) get_ota_firmware();  // Only if enough power supply: try to get new firmware version. If successful, it restars the CPU
+      if (voltage > 7000) get_ota_firmware();  // Only if enough power supply: try to get new firmware version. If successful, it restars the CPU
       start_webserver();   // Start file server of spiffs filesystem
       esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
    }
@@ -715,7 +716,6 @@ void app_main(void)
        esp_system_abort(NULL);  // Or esp_deep_sleep_start();   
    }
    
-   oledClear();
    xMainTask = xTaskGetCurrentTaskHandle();
    startTasks();
    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for tasks to activate
@@ -723,7 +723,7 @@ void app_main(void)
  
    // Check if battery low
    uint32_t volts = getSupplyVoltage();  
-   if (volts < 2*3300) {
+   if (volts < 6600) {
       oledBigMessage(0, "Battery!");
       audioplay("/spiffs/batterylow.wav", 1);
       oledBigMessage(0, NULL);           
@@ -945,7 +945,7 @@ TickType_t xDelay = (TickType_t)pvParameters;
 static const uint8_t empty_battery[] = {0, 254, 130, 131, 131, 130, 254, 0};  // glyph for empty battery
 uint8_t battery_glyph[sizeof(empty_battery)];
 uint32_t voltage, current, battery1, battery2;
-char str[OLED_MAX_LINE_SIZE+1];
+char str[OLED_MAX_LINE_SIZE];
 char str_old[sizeof(str)] = {0};
 int8_t step, old_step = -1;
 const uint32_t maxUndervoltageTime = 4000;  // Milliseconds with undervoltage before shutdown is triggered

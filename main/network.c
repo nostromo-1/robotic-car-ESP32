@@ -242,7 +242,6 @@ wifi_config_t wifi_config;
          oledWriteString(0, 7, "in wifi router", false);
          ESP_ERROR_CHECK(esp_wifi_wps_enable(&wps_config));
          ESP_ERROR_CHECK(esp_wifi_wps_start(0));
-         oledClear();
        }
        else esp_wifi_connect();  // Credentials found in NVS 
     }
@@ -251,29 +250,15 @@ wifi_config_t wifi_config;
     /* Wait until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
      * number of re-tries. The bits are set by the event handler */
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+    esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config);
     if (bits & WIFI_CONNECTED_BIT) {
-       esp_netif_ip_info_t ip_info;
-       char str[OLED_MAX_LINE_SIZE+1];
-
-       esp_netif_get_ip_info(sta_netif, &ip_info);
-       snprintf(str, sizeof(str), IPSTR, IP2STR(&ip_info.ip));
-       oledWriteString(0, 5, str, false);
-       
-       esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config);
-       size_t ssidLen = strlen((char*)wifi_config.sta.ssid);
-       ESP_LOGI(TAG, "Connected to AP SSID: %s", wifi_config.sta.ssid);
-       snprintf(str, sizeof(str), "%s", wifi_config.sta.ssid);
-       oledWriteString(0, 6, str, false);
-       if (ssidLen > OLED_MAX_LINE_SIZE) {
-         snprintf(str, sizeof(str), "%s", wifi_config.sta.ssid + OLED_MAX_LINE_SIZE);
-         oledWriteString(0, 7, str, false);
-       }
-       return 0;
+        ESP_LOGI(TAG, "Connected to AP SSID: %s", wifi_config.sta.ssid);
+        return 0;
     } else if (bits & WIFI_FAIL_BIT) {
-       ESP_LOGI(TAG, "Failed to connect to wifi");
-       esp_wifi_disconnect();
-       esp_wifi_stop();
-       return -1;
+        ESP_LOGI(TAG, "Failed to connect to wifi");
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+        return -1;
     } 
     else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
@@ -282,21 +267,14 @@ wifi_config_t wifi_config;
 }
 
 
-#ifndef CONFIG_TIMEZONE
-#define CONFIG_TIMEZONE "CET-1CEST"
-#endif 
-/* 
-  CB called when NTP sync was successful.
-  It sets the TZ (TimeZone) environment variable, used to interpret the time read by NTP
-  If TZ is not defined, it sets it to a default of Central European Standard Time.
-  See https://ftp.fau.de/aminet/util/time/tzinfo.txt
- */
+
+/* CB called when NTP sync was successful */
 void time_sync_notification_cb(struct timeval *tv)
 {
 time_t now;
 
     time(&now);
-    setenv("TZ", CONFIG_TIMEZONE, 1);
+    setenv("TZ", "CET-1CEST", 1); // Set timezone to Central European Standard Time. See https://ftp.fau.de/aminet/util/time/tzinfo.txt
     tzset();
     ESP_LOGI(TAG, "Time set via NTP: %s", ctime(&now));
 }

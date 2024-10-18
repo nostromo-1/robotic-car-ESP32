@@ -22,14 +22,7 @@ menu "Robot Car"
             When enabled, the robot car will rotate by stopping one of the wheels.
             If disabled, it will rotate by reversing one of the wheels.
             Activate it only if the car is 2 wheel.
- 
-     config TIMEZONE
-        string "Time Zone"
-        default "CET-1CEST"
-        help
-            The UNIX timezone to be set. It is used when interpreting the time obtained by the NTP server.
-            The list of valid values is in https://ftp.fau.de/aminet/util/time/tzinfo.txt
-            
+
      config CALIBRATE_IMU
         bool "Calibrate IMU"
         default n
