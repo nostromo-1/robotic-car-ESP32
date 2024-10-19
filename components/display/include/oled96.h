@@ -24,7 +24,7 @@ int oledInit(uint8_t iAddress);
 void oledShutdown(void);
 
 // Clear display
-int oledClear(void);
+void oledClear(void);
 
 // Write a text string to the display at x (column 0-127) and y (row 0-7)
 // bLarge = 0 - 8x8 font, bLarge = 1 - 16x24 font

@@ -344,7 +344,7 @@ char local_version[sizeof(new_app_info->version)];
 
 /**
 Look for new firmware version in github. 
-If firmware there has a different version than the local one, download it and restart CPU.
+If firmware there has a newer version than the local one, download it and restart CPU.
 **/
 void get_ota_firmware(void)
 {

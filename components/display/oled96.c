@@ -80,25 +80,18 @@ rw_error:
 
 
 // Clear display: fill the frame buffer with 0
-int oledClear(void)
+void oledClear(void)
 {
-int y, rc;
 uint8_t temp[128];
 
 	memset(temp, 0, sizeof(temp));
-	for (y=0; y<8; y++) {
-      xSemaphoreTake(mutex, portMAX_DELAY);
-		rc = oledSetPosition(0, y);
-		rc |= oledWriteDataBlock(temp, sizeof(temp)); // fill line with data byte
-      xSemaphoreGive(mutex);
-      if (rc<0) goto rw_error; 
+   xSemaphoreTake(mutex, portMAX_DELAY);
+	for (int y=0; y<8; y++) {
+		int rc = oledSetPosition(0, y);
+		if (rc == 0) oledWriteDataBlock(temp, sizeof(temp)); // fill line with data byte
 	} 
-    
-	return 0;
-   
-   // error handling if operation from I2C bus failed
-rw_error:
-   ERR(-1, "Cannot write data to display");   
+   xSemaphoreGive(mutex);
+	return;
 }
 
 
@@ -129,15 +122,14 @@ rw_error:
 // Length can be anything from 1 to 128 (whole line)
 static int oledWriteDataBlock(const uint8_t *ucBuf, uint8_t iLen)
 {
-uint8_t ucTemp[129];
+uint8_t ucTemp[128+1];
 esp_err_t rc;
 int rest;
 
-	 ucTemp[0] = 0x40; // data command
-    
     if (!ucBuf) ERR(-1, "Error writing to display: Invalid buffer");
     if (iLen > 128) ERR(-1, "Error writing to display: Invalid length for display data");
     if (iLen == 0) return 0;
+    ucTemp[0] = 0x40; // data command
     memcpy(&ucTemp[1], ucBuf, iLen);
     
 	 // Write data to display, taking care not to overflow to beginning of row (display in page mode)
@@ -227,20 +219,21 @@ int rc;
 // If it is longer, it will be truncated
 int oledWriteString(int x, int y, const char *szMsg, bool bLarge)
 {
-int i, j, iLen, rc;
-const uint8_t *s;
+int iLen, rc;
 uint8_t buf[16*8];
 
    if (y<0 || y>7 || x<0 || x>127) ERR(-1, "Invalid coordinates for display");
    if (!szMsg) ERR(-1, "Invalid string");
     
 	iLen = strlen(szMsg);
+   if (iLen == 0) return 0;
+   
 	if (bLarge) {  // draw 16x24 font, 8 characters per line
-        for (i=0; i<3; i++) {
+        for (int i=0; i<3; i++) {
             xSemaphoreTake(mutex, portMAX_DELAY); 
             rc = oledSetPosition(x, y+i);
-            for (j = 0; j < min(iLen,8); j++) {
-                s = &ucFont[9728 + (uint8_t)(szMsg[j]&0x7F)*64];  // 0x7F: large font has only 128 characters
+            for (int j = 0; j < min(iLen,8); j++) {
+                const uint8_t *s = &ucFont[9728 + (uint8_t)(szMsg[j]&0x7F)*64];  // 0x7F: large font has only 128 characters
                 memcpy(buf+j*16, s+16*i, 16);
             }
             rc |= oledWriteDataBlock(buf, iLen*16);
@@ -251,7 +244,7 @@ uint8_t buf[16*8];
 	else {  // draw 8x8 font, 16 characters per line
       xSemaphoreTake(mutex, portMAX_DELAY); 
 		rc = oledSetPosition(x, y);
-		for (i = 0; i < min(iLen,16); i++) memcpy(buf+i*8, &ucFont[(uint8_t)szMsg[i]*8], 8);
+		for (int i = 0; i < min(iLen,16); i++) memcpy(buf+i*8, &ucFont[(uint8_t)szMsg[i]*8], 8);
       rc |= oledWriteDataBlock(buf, iLen*8); // write character pattern
       xSemaphoreGive(mutex); 
       if (rc < 0) goto rw_error; 
