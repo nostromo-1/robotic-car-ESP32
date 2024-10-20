@@ -513,7 +513,7 @@ BaseType_t xHigherPriorityTaskWoken = pdFALSE;
       created.  vTaskNotifyGiveFromISR() also increments
       the receiving task's notification value. */
 
-      vTaskNotifyGiveFromISR(mando.taskHandle, &xHigherPriorityTaskWoken);
+      if (mando.taskHandle) vTaskNotifyGiveFromISR(mando.taskHandle, &xHigherPriorityTaskWoken);
    
       /* Force a context switch if xHigherPriorityTaskWoken is now
       set to pdTRUE. The macro used to do this is dependent on
@@ -608,18 +608,23 @@ uint32_t voltage, current, battery1;
    //setupBMP280(BMP280_I2C, TIMER4);  // Setup temperature/pressure sensor
 
    if (setupWiimote()) return 1;
-   gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
-   gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);  // Call wmScan when button changes. Debe llamarse después de setupWiimote
    
-   /*
-   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C) == 0) { // Setup IMU sensor
+   oledBigMessage(0, "CALIB?");
+   vTaskDelay(pdMS_TO_TICKS(1000));
+   bool do_calibrate = (gpio_get_level(mando.scan_pin) == 0);  // if button is pressed, the user wants to calibrate IMU
+   oledBigMessage(0, NULL);
+   while (gpio_get_level(mando.scan_pin) == 0) vTaskDelay(pdMS_TO_TICKS(100));   // Wait till user releases button
+   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate) == 0) { // Setup IMU sensor
       use_IMU = true;   
    }
-   */
-   oledSetInversion(false); // clear display
    
-   if (setupSonarHCSR04()) return 1;  // last to call, as it starts measuring distance and triggering semaphore
+   if (setupSonarHCSR04()) return 1;
+      
+   // Call wmScan when button is pressed
+   gpio_set_intr_type(mando.scan_pin, GPIO_INTR_LOW_LEVEL);
+   gpio_isr_handler_add(mando.scan_pin, wmScan, (void*)mando.scan_pin);
 
+   oledSetInversion(false); // set display to normal mode
    return 0;
 }
 

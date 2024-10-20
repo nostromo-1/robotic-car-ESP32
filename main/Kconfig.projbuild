@@ -30,11 +30,5 @@ menu "Robot Car"
             It specifies the timezone to interpret the time received via NTP. 
             See https://ftp.fau.de/aminet/util/time/tzinfo.txt for a list     
             
-
-     config CALIBRATE_IMU
-        bool "Calibrate IMU"
-        default n
-        help
-            When enabled, the IMU will be calibrated when the car is started.
             
 endmenu

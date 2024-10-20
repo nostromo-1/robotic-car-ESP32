@@ -491,6 +491,7 @@ static esp_err_t file_get_handler(httpd_req_t *req)
       httpd_resp_send_chunk(req, line, strlen(line));
    }
    httpd_resp_send_chunk(req, NULL, 0);
+   
    fclose(file);
    return ESP_OK;
 }

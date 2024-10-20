@@ -2,7 +2,7 @@
 
 IMU control code, for the LSM9DS1 9DoF MARG sensor (Magnetic, Angular Rate and Gravity)
 3D accelerometer, 3D gyroscope, 3D magnetometer 
-Controlled by I2C bus (should be 400 KHz). It shows two addresses: 
+Controlled by I2C bus (at 400 KHz). It shows two addresses: 
 the acelerometer/gyroscope and the magnetometer.
 
 It must be placed in the robot car such that the dot on the chip is in the right bottom corner
@@ -54,7 +54,7 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
          return ret;                                                   \
    }
 
-#define STD_DEV(s1, s2, N) sqrt(((s2) - ((s1)*(s1))/(float)(N))/((N)-1))
+#define STD_DEV(s1, s2, N) sqrtf(((s2) - ((s1)*(s1))/(float)(N))/((N)-1))
 
 #define READ_ATOMIC(var) atomic_load_explicit(&var, memory_order_acquire)
 #define WRITE_ATOMIC(var,value) atomic_store_explicit(&var, value, memory_order_release)
@@ -100,7 +100,7 @@ static const float odr_ag_modes[] = {0.0,14.9,59.5,119.0,238.0,476.0,952.0};  //
 static const enum {M_ODR_0_625,M_ODR_1_25,M_ODR_2_5,M_ODR_5,M_ODR_10,M_ODR_20,M_ODR_40,M_ODR_80} ODR_M = M_ODR_40;   
 static const float odr_m_modes[] = {0.625,1.25,2.5,5.0,10.0,20.0,40.0,80.0};  // Values in Hz
 
-static const float deltat = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
+static const float delta_t = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
 static int upsampling_factor;  /* Ratio between both ODRs */
 
 static Filter_t filter_mx, filter_my, filter_mz;   /* Interpolating filters for magnetometer */
@@ -225,7 +225,7 @@ static const float LP_20_240_filter_taps[] = {
 };
 
 
-static int LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_list_size) 
+static esp_err_t LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_list_size) 
 {
    if (filter == NULL) ERR(-1, "Invalid filter descriptor");
    if (tap_array == NULL || tap_list_size == 0) ERR(-1, "Invalid tap array for filter");
@@ -234,7 +234,7 @@ static int LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_
    filter->taps = tap_array;
    filter->history = calloc(tap_list_size, sizeof(float));
    if (filter->history == NULL) ERR(-1, "Cannot allocate memory: %s", strerror(errno));
-   return 0;
+   return ESP_OK;
 }
 
 
@@ -388,7 +388,7 @@ dev_error:
 
 
 // Send a single byte value to a register in the IMU
-static int i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
+static esp_err_t i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
 {
 esp_err_t rc;
 uint8_t buf[2];
@@ -396,21 +396,21 @@ uint8_t buf[2];
    buf[0] = reg;
    buf[1] = val;
    rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (rc != ESP_OK) ERR(-1, "Error writing to IMU"); 
-   return 0;
+   if (rc != ESP_OK) ERR(ESP_FAIL, "Error writing to IMU"); 
+   return ESP_OK;
 }
 
 
 // Send a single byte value to a register in the IMU and read a number of bytes as response
-static int i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_t read_size)
+static esp_err_t i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_t read_size)
 {
 esp_err_t rc;
           
    if (read_size == 0) return 0;
    if (read_buf == NULL) return -1;
    rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (rc != ESP_OK) ERR(-1, "Error reading from IMU"); 
-   return 0;
+   if (rc != ESP_OK) ERR(ESP_FAIL, "Error reading from IMU"); 
+   return ESP_OK;
 }
 
 
@@ -427,7 +427,7 @@ int delay;
       else ets_delay_us(delay*1000); 
       
       rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
-      if (rc < 0) goto rw_error;   
+      if (rc != ESP_OK) goto rw_error;   
    }
    return 0;
 
@@ -437,20 +437,110 @@ rw_error:
 
 
 
+
+/* 
+ Calibrate accelerometer and gyroscope. The IMU should rest horizontal, so that
+ measured accel values should be (0,0,1) and measured gyro values should be (0,0,0)
+ It writes the measured error in global variables err_AL and err_GY.
+ It also calculates the standard deviation of the measured values.
+ It writes the measured deviation in global variables deviation_AL and deviation_GY.
+ */
+static void calibrate_accel_gyro(void)
+{
+esp_err_t rc;
+uint8_t byte;
+int16_t gx, gy, gz; // x, y, and z axis readings of the gyroscope
+int16_t ax, ay, az; // x, y, and z axis readings of the accelerometer   
+uint8_t buf[FIFO_LINE_SIZE];
+int32_t delay, samples=0; 
+int32_t s1_ax=0, s1_ay=0, s1_az=0;  // Sum of the accel samples
+int32_t s2_ax=0, s2_ay=0, s2_az=0;  // Sum of the squares of the accel samples
+int32_t s1_gx=0, s1_gy=0, s1_gz=0;  // Sum of the gyro samples
+int32_t s2_gx=0, s2_gy=0, s2_gz=0;  // Sum of the squares of the gyro samples
+int64_t start_tick, elapsed_useconds=0;
+const int cal_seconds = 4; // Number of seconds to take samples
+   
+   printf("Calibrating accelerometer and gyroscope. Leave robot car horizontal...\n");
+   vTaskDelay(pdMS_TO_TICKS(1000));   // 1 second delay
+   
+   start_tick = esp_timer_get_time();
+   do {
+      // Wait for new data to arrive, acc. ODR selected (4.2 ms for 238 Hz)
+      delay = lroundf(1000.0/odr_ag_modes[ODR_AG]);  // Time to wait for new data to arrive, in ms
+      if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
+      else ets_delay_us(delay*1000); 
+      
+      rc = i2cWriteReadBytes(accelAddr, 0x27, &byte, 1);  // Read STATUS_REG register
+      if (rc != ESP_OK) goto rw_error;
+      if (byte&0x01) {  // New accelerometer data available
+      
+         // Burst read. Accelerometer and gyroscope sensors are activated at the same ODR
+         // So read 12 bytes: 2x3x2
+         rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
+         if (rc != ESP_OK) goto rw_error;   
+ 
+         /* Read accel and gyro data. X and Y axis are exchanged, so that reference system is
+            right handed, and filter algorithms work correctly */
+         gy = buf[1]<<8 | buf[0]; gx = buf[3]<<8 | buf[2]; gz = buf[5]<<8 | buf[4];
+         ay = buf[7]<<8 | buf[6]; ax = buf[9]<<8 | buf[8]; az = buf[11]<<8 | buf[10]; 
+         az -= (int16_t)(1.0/aRes);  // Expected value for az is 1g, not 0g
+         
+         s1_ax += ax; s2_ax += (int32_t)ax*(int32_t)ax; 
+         s1_ay += ay; s2_ay += (int32_t)ay*(int32_t)ay; 
+         s1_az += az; s2_az += (int32_t)az*(int32_t)az; 
+         s1_gx += gx; s2_gx += (int32_t)gx*(int32_t)gx; 
+         s1_gy += gy; s2_gy += (int32_t)gy*(int32_t)gy; 
+         s1_gz += gz; s2_gz += (int32_t)gz*(int32_t)gz;              
+         samples++;
+      }
+      elapsed_useconds = esp_timer_get_time() - start_tick;   
+   } while (elapsed_useconds < cal_seconds*1E6);  // loop for 4 seconds  
+         
+   // Calculate the mean of accelerometer biases and store it in variable err_AL
+   err_AL[0] = s1_ax/samples; err_AL[1] = s1_ay/samples; err_AL[2] = s1_az/samples; 
+   printf("Accelerometer bias: %d %d %d\n", err_AL[0], err_AL[1], err_AL[2]);
+   
+   // Calculate the mean of gyroscope biases and store it in variable err_GY   
+   err_GY[0] = s1_gx/samples; err_GY[1] = s1_gy/samples; err_GY[2] = s1_gz/samples; 
+   printf("Gyroscope bias: %d %d %d\n", err_GY[0], err_GY[1], err_GY[2]);   
+ 
+   // Calculate std deviation
+   deviation_AL[0] = STD_DEV(s1_ax, s2_ax, samples);
+   deviation_AL[1] = STD_DEV(s1_ay, s2_ay, samples);
+   deviation_AL[2] = STD_DEV(s1_az, s2_az, samples); 
+   printf("Accelerometer std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
+   
+   deviation_GY[0] = STD_DEV(s1_gx, s2_gx, samples); 
+   deviation_GY[1] = STD_DEV(s1_gy, s2_gy, samples); 
+   deviation_GY[2] = STD_DEV(s1_gz, s2_gz, samples);
+   printf("Gyroscope std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);   
+    
+   printf("Done\n");
+   return;
+  
+rw_error:
+   err_AL[0] = err_AL[1] = err_AL[2] = 0;
+   err_GY[0] = err_GY[1] = err_GY[2] = 0; 
+   ERR(, "Cannot read/write data from IMU");
+} 
+
+
+
+
 /************************************************************
 Initialize IMU LSM9DS1
 Input: I2C address of accel/gyro and of magnetometer
 Output: Status (return value) and delay in ms to read the IMU (as parameter)
 ************************************************************/
-int setupLSM9DS1(uint8_t accel_addr, uint8_t mag_addr)
+int setupLSM9DS1(uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate)
 {
-int rc;
+esp_err_t rc;
 uint8_t byte;
 
    /***** Initial checks *****/
    assert(odr_ag_modes[ODR_AG] > odr_m_modes[ODR_M]);
    upsampling_factor = lroundf(odr_ag_modes[ODR_AG] / odr_m_modes[ODR_M]);
-   printf("Interpolation factor: %d\n", upsampling_factor);
+   //printf("Interpolation factor: %d\n", upsampling_factor);
    
    // Check acelerometer/gyroscope   
    rc = i2cWriteReadBytes(accel_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
@@ -463,7 +553,7 @@ uint8_t byte;
    
    // Check magnetometer  
    rc = i2cWriteReadBytes(mag_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
-   if (rc < 0) goto rw_error;
+   if (rc != ESP_OK) goto rw_error;
    if (byte != 0x3D) {
       //closeLSM9DS1();
       ERR(-1, "Invalid magnetometer device");  
@@ -482,14 +572,14 @@ uint8_t byte;
    // 4000 mGauss is enough for earth magnetic field + hardiron offset
    byte = 0x0; 
    rc = i2cWriteByte(magAddr, 0x21, byte);
-   if (rc < 0) goto rw_error;   
+   if (rc != ESP_OK) goto rw_error;   
    mRes = 4.0f/32768;   // G/LSB
    
    // Activate magnetometer, CTRL_REG3_M
    // I2C: enabled (b0), 0 (b0), LP: No (b0), 0 (b0), 0 (b0), SPI: wo (b0), mode: Continuous (b00)
    byte = 0x0; 
    rc = i2cWriteByte(magAddr, 0x22, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
       
    // Set magnetometer, CTRL_REG4_M
    // OMZ: ultra (b11), BLE: data LSb at lower address (b0)
@@ -501,7 +591,7 @@ uint8_t byte;
    // BDU:  continuous update (b0)
    byte = 0x00; 
    rc = i2cWriteByte(magAddr, 0x24, byte);
-   if (rc < 0) goto rw_error;
+   if (rc != ESP_OK) goto rw_error;
    
    /************************* Set Acelerometer / Gyroscope ***********************/   
    // Set IMU, CTRL_REG8
@@ -509,19 +599,19 @@ uint8_t byte;
    // PP_OD: 0 (b0), SIM: 0 (b0), IF_ADD_INC: enabled (b1), BLE: data LSB @ lower address (b0), SW_RESET: normal mode (b0)
    byte = 0x04; 
    rc = i2cWriteByte(accelAddr, 0x22, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    // Set accelerometer, CTRL_REG5_XL
    // DEC: no decimation (b00), Zen_XL, Yen_XL, Xen_XL: enabled (b1)
    byte = (0x00<<6) + (0x07<<3); 
    rc = i2cWriteByte(accelAddr, 0x1F, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
  
    // Set accelerometer, CTRL_REG6_XL
    // ODR: Power down (b000), FS: 2g (b00), BW_SCAL: auto (b0), BW sel: 408 Hz (b00)
    byte = (0x00<<5) + (0x0<<3) + 0x0; 
    rc = i2cWriteByte(accelAddr, 0x20, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    aRes = 2.0f/32768;   // g/LSB
 
    // Set accelerometer, CTRL_REG7_XL
@@ -529,86 +619,84 @@ uint8_t byte;
    // both LPF enabled, HPF disabled
    byte = (0x01<<7) + (0x02<<5) + 0x0; 
    rc = i2cWriteByte(accelAddr, 0x21, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, CTRL_REG4
    // Zen_G, Yen_G, Xen_G: enabled (b1), LIR_XL1: 0 (b0), 4D_XL1: 0 (b0)
    byte = 0x07<<3; 
    rc = i2cWriteByte(accelAddr, 0x1E, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, ORIENT_CFG_G
    // SignX_G, SignX_G, SignX_G: positive sign (b0), Orient: 0 (b000) (Pitch:X, Roll:Y, Yaw:Z)
    byte = 0x00; 
    rc = i2cWriteByte(accelAddr, 0x13, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    // Activate accelerometer and gyro, CTRL_REG1_G. Both use the same ODR
    // ODR: xxx Hz LPF1 31 Hz (b011), Gyro scale: 245 dps (b00), 0 (b0), Gyro BW LPF2: 31 Hz (b01)
    // The ODR is variable, acc. ODR_AG, LPF2 is set to be always around 30 Hz (b01) (for ODR of 119 Hz and above)
    byte = (ODR_AG<<5) + (0x0<<3) + 0x01; 
    rc = i2cWriteByte(accelAddr, 0x10, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    gRes = 245.0f/32768;   // dps/LSB
    
    // Set gyro, CTRL_REG2_G
    // INT_SEL: 0 (b00), OUT_SEL: 0 (b10) (output after LPF2)
    byte = 0x02; 
    rc = i2cWriteByte(accelAddr, 0x11, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, CTRL_REG3_G
    // LP_mode: disabled (b0), HP_EN: disabled (b0), HPCF_G: 0.5 Hz for 119 Hz ODR (b0100) 
    // both LPF enabled, HPF disabled
    byte = (0x0<<7) + (0x0<<6) + 0x04; 
    rc = i2cWriteByte(accelAddr, 0x12, byte);
-   if (rc < 0) goto rw_error;  
+   if (rc != ESP_OK) goto rw_error;  
 
    /* Empty and reset FIFO, in case it was active, so we start afresh */
    rc = i2cWriteByte(accelAddr, 0x2E, 0x00);  // Reset existing FIFO content by selecting FIFO Bypass mode 
-   if (rc < 0) goto rw_error;  
+   if (rc != ESP_OK) goto rw_error;  
  
    /* Initial samples after FIFO change and after power up (Table 12 of user manual) have to be discarded */
    rc = read_discard_fifo_samples(20);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    /************************** Handle calibration ********************/
-   /*
-   if (calibrate) {
-      calibrate_accel_gyro();
-      calibrate_magnetometer();
-      write_calibration_data();
-      gpioSleep(PI_TIME_RELATIVE, 1, 0);  // Sleep 1 second, so the user can continue the start process
+   read_calibration_data();
+   if (do_calibrate) {
+      printf("Start calibration\n");
+      //calibrate_accel_gyro();
+      //calibrate_magnetometer();
+      //write_calibration_data();
+      vTaskDelay(pdMS_TO_TICKS(2000));  // Sleep 1 second, so the user can continue the start process
    }
-   else read_calibration_data();   
-   */
-   read_calibration_data(); 
    
    /************** Continue with accelerometer setting, activate FIFO ****************/
    // Set FIFO, FIFO_CTRL
    // FMODE: continuous mode (b110), threshold: 0 (b00000)
    byte = (0x06<<5) + 0x0; 
    rc = i2cWriteByte(accelAddr, 0x2E, byte);
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
 
    // Activate FIFO, CTRL_REG9
    // SLEEP_G: disabled (b0), FIFO_TEMP_EN: no (b0), 
    // DRDY_mask_bit: disabled (b0), I2C_DISABLE: both (b0), FIFO_EN: yes (b1), STOP_ON_FTH: no (b0)
    byte = 0x02; 
    rc = i2cWriteByte(accelAddr, 0x23, byte);
-   if (rc < 0) goto rw_error;  
+   if (rc != ESP_OK) goto rw_error;  
    
    rc = read_discard_fifo_samples(2);  // Discard samples after FIFO activation
-   if (rc < 0) goto rw_error; 
+   if (rc != ESP_OK) goto rw_error; 
    
    /************************* Final actions ***********************/   
    // Initialize low pass filter for interpolating magnetometer data
    rc = LPFilter_init(&filter_mx, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc < 0) goto init_error;  
-   LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc < 0) goto init_error;    
-   LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc < 0) goto init_error; 
+   if (rc != ESP_OK) goto init_error;  
+   rc = LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
+   if (rc != ESP_OK) goto init_error;    
+   rc = LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
+   if (rc != ESP_OK) goto init_error; 
    
    /*
    // Initialize low pass filter for accelerometer data
@@ -626,7 +714,7 @@ uint8_t byte;
    */
    
    // Start the IMU reading timer
-   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.1);  // Read IMU with a period of magnetometer ODR, add margin
+   uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add margin
    esp_timer_handle_t timer;
    const esp_timer_create_args_t timer_args = {
             .dispatch_method = ESP_TIMER_TASK,
@@ -638,7 +726,7 @@ uint8_t byte;
    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 1000*delay_ms));
    ESP_LOGI(TAG, "IMU is read every %lu ms", delay_ms);
-      
+
    return 0;
    
    /* error handling if read operation from I2C bus failed */
@@ -665,7 +753,7 @@ int rc;
    
    // Read status register in magnetometer, to check if new data is available
    rc = i2cWriteReadBytes(magAddr, 0x27, &byte, 1);  // Read magnetometer STATUS_REG register
-   if (rc < 0) return -1;   // Read error, error message already sent
+   if (rc != ESP_OK) return -1;   // Read error, error message already sent
    if ((byte&0x08) == 0) return 0; // If no new data available, return 0
 
    /* New magnetometer data in XYZ is available
@@ -673,7 +761,7 @@ int rc;
       so align the axis with tha ones used in this module for car orientation */
          
    rc = i2cWriteReadBytes(magAddr, 0x28, buf, sizeof(buf));  // Read 6 bytes (X,Y,Z axis), starting in OUT_X_L_M register
-   if (rc < 0) return -1;   // Read error, error message already sent
+   if (rc != ESP_OK) return -1;   // Read error, error message already sent
    my = buf[1]<<8 | buf[0]; mx = buf[3]<<8 | buf[2]; mz = buf[5]<<8 | buf[4];  
    my *= -1;     
    
@@ -800,7 +888,7 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
-      printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
+      //printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
    
    
    
