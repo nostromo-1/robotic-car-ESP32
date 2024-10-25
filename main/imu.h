@@ -15,6 +15,6 @@ void closeLSM9DS1(void);
 // Function to read orientation of robot car
 int getAttitude(float *yaw, float *pitch, float *roll);
 
-void save_accel_data(void);
+//void save_accel_data(void);
 
 #endif // IMU_H

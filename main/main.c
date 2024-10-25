@@ -284,7 +284,7 @@ static void speedSensor(void *args);
 static void audioplay(const char *file, int modo);
 static int retreatBackwards(void);
 static void avoidObstacle(void);
-static void pito(uint32_t decimas, int modo);
+void pito(uint32_t decimas, int modo);  // Not static, used elsewhere
 
 
 static void startTasks(void)
@@ -610,7 +610,7 @@ uint32_t voltage, current, battery1;
    if (setupWiimote()) return 1;
    
    oledBigMessage(0, "CALIB?");
-   vTaskDelay(pdMS_TO_TICKS(1000));
+   vTaskDelay(pdMS_TO_TICKS(2000));
    bool do_calibrate = (gpio_get_level(mando.scan_pin) == 0);  // if button is pressed, the user wants to calibrate IMU
    oledBigMessage(0, NULL);
    while (gpio_get_level(mando.scan_pin) == 0) vTaskDelay(pdMS_TO_TICKS(100));   // Wait till user releases button
