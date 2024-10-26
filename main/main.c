@@ -696,7 +696,7 @@ esp_err_t ret;
 void app_main(void)
 {
    fw_description = esp_app_get_description();
-   printf("App %s, version %s\n", fw_description->project_name, fw_description->version);
+   printf("FW of %s, version %s\n", fw_description->project_name, fw_description->version);
    printf("Hello world from CPU %d\n", xPortGetCoreID());
    printf("RTOS version %s\n", tskKERNEL_VERSION_NUMBER);
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);

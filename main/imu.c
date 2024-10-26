@@ -55,10 +55,8 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
    }
 
 
-
 #define READ_ATOMIC(var) atomic_load_explicit(&var, memory_order_acquire)
 #define WRITE_ATOMIC(var,value) atomic_store_explicit(&var, value, memory_order_release)
-
 
 #define I2C_BUS I2C_NUM_0   // i2c bus of IMU
 #define I2C_MASTER_TIMEOUT_MS   100
@@ -67,22 +65,16 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 extern _Atomic bool collision;  // Car has crashed when moving forwards or backwards
 
 typedef struct {
-    int *xvalues, *yvalues, *zvalues;
+    int32_t *xvalues, *yvalues, *zvalues;
     int num_elems;
 } SampleList_t;
 
 
-typedef struct {
-  float *history;
-  const float *taps;
-  unsigned int last_index, taps_num;
-} Filter_t;
-
-
 static const char* TAG = __FILE__;
 static uint8_t accelAddr, magAddr;  // I2C addresses
-static FILE *accel_fp;
 
+// Output variables of module
+float roll, pitch, yaw, tilt;
 
 /* 
 Define ODR of accel/gyro and magnetometer. 
@@ -103,15 +95,13 @@ static const float odr_m_modes[] = {0.625,1.25,2.5,5.0,10.0,20.0,40.0,80.0};  //
 static const float delta_t = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
 static int upsampling_factor;  /* Ratio between both ODRs */
 
-static Filter_t filter_mx, filter_my, filter_mz;   /* Interpolating filters for magnetometer */
-
 
 // gRes, aRes, and mRes store the current resolution for each sensor. 
 // Units of these values would be DPS (or g's or Gs's) per ADC tick.
 // This value is calculated as (sensor scale) / (2^15), as data resolution is 16 bits, signed.
 static float gRes, aRes, mRes;
 
-/* Store error offset for calibration of accel/gyro and magnetometer */
+/* Store error offset (bias) for calibration of accel/gyro and magnetometer */
 static int16_t err_AL[3];  // ex,ey,ez values (error for each axis in accelerometer)
 static int16_t err_GY[3];  // ex,ey,ez values (error for each axis in gyroscope)
 static int16_t err_MA[3];  // ex,ey,ez values (error for each axis in magnetometer, hardiron effects)
@@ -146,11 +136,6 @@ In any case, this is the free parameter in the Madgwick filtering and fusion sch
 static const float beta = 1.73205/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
 
 
-
-// Output variables of module
-float roll, pitch, yaw, tilt;
-
-
 /* Prototypes */
 extern void pito(uint32_t decimas, int modo);  // From main.c
 static void IMU_read(void*);
@@ -167,105 +152,6 @@ static void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, flo
                                      float mx, float my, float mz);
 */                                     
                                      
-                
-/************************ Filter functions ***********************/
-
-/**
-Digital FIR filter. This LPF is used for filterig magnetometer data.
-It is used to interpolate after upsampling from ODR_M to ODR_AG.
-It is designed to work with these combinations (upsampling x3 or x6):
-ODR_M=80, ODR_AG=476; ODR_M=80, ODR_AG=238;
-ODR_M=40, ODR_AG=238; ODR_M=40, ODR_AG=119; 
-ODR_M=20, ODR_AG=119; ODR_M=20, ODR_AG=59.5; 
-ODR_M=10, ODR_AG=59.5; 
-
-FIR filter designed with
- http://t-filter.appspot.com
-
-sampling frequency: 240 Hz
-
-* 0 Hz - 4 Hz
-  gain = 1
-  desired ripple = 2 dB
-  actual ripple = 1.0141307953166252 dB
-
-* 5 Hz - 19 Hz
-  gain = 1
-  desired ripple = 35 dB
-  actual ripple = 33.758521533154735 dB
-
-* 20 Hz - 120 Hz
-  gain = 0
-  desired attenuation = -40 dB
-  actual attenuation = -43.613766226277974 dB
-**/
-
-static const float LP_20_240_filter_taps[] = {
-  0.0017433948030936106,
-  0.009143190985861756,
-  0.012133516280499421,
-  0.01983655704542007,
-  0.02830242809740451,
-  0.03812682806131509,
-  0.048540195172121076,
-  0.05892094411702151,
-  0.06848428950018577,
-  0.07647321877548367,
-  0.08222112771837956,
-  0.08523022650867189,
-  0.08523022650867189,
-  0.08222112771837956,
-  0.07647321877548367,
-  0.06848428950018577,
-  0.05892094411702151,
-  0.048540195172121076,
-  0.03812682806131509,
-  0.02830242809740451,
-  0.01983655704542007,
-  0.012133516280499421,
-  0.009143190985861756,
-  0.0017433948030936106
-};
-
-
-static esp_err_t LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_list_size) 
-{
-   if (filter == NULL) ERR(-1, "Invalid filter descriptor");
-   if (tap_array == NULL || tap_list_size == 0) ERR(-1, "Invalid tap array for filter");
-   filter->last_index = 0;
-   filter->taps_num = tap_list_size;
-   filter->taps = tap_array;
-   filter->history = calloc(tap_list_size, sizeof(float));
-   if (filter->history == NULL) ERR(-1, "Cannot allocate memory: %s", strerror(errno));
-   return ESP_OK;
-}
-
-
-static void LPFilter_close(Filter_t *filter) 
-{
-   if (filter->history) free(filter->history);
-}
-
-
-static void LPFilter_put(Filter_t *filter, float input) 
-{
-  filter->history[filter->last_index++] = input;
-  if (filter->last_index == filter->taps_num) filter->last_index = 0;
-}
-
-
-static float LPFilter_get(const Filter_t *filter) 
-{
-  float acc = 0;
-  unsigned index = filter->last_index;
-  
-  for (unsigned i = 0; i < filter->taps_num; i++) {
-    index = (index != 0) ? index-1 : filter->taps_num-1;
-    acc += filter->history[index] * filter->taps[i];
-  }
-  return acc;
-}
-
                 
 /** IMU functions **/
                                    
@@ -299,7 +185,7 @@ Angles according extrinsic rotation sequence x-y-z (https://en.wikipedia.org/wik
 which is equivalent to the intrinsic rotation z-y'-x'' (so the angles are the same): yaw -> pitch -> roll.
 See also https://en.wikipedia.org/wiki/Davenport_chained_rotations
 */
-void printOrientation(float ax, float ay, float az, float mx, float my, float mz)
+void getOrientation(float ax, float ay, float az, float mx, float my, float mz)
 {
 float sinpitch, cospitch, sinroll, cosroll, rootayaz, rootaxayaz;
 const float alpha = 0.05;
@@ -333,8 +219,6 @@ const float alpha = 0.05;
    yaw *= 180/M_PI; yaw -= declination; if (yaw<0) yaw += 360;  // yaw (heading) must be positive
    pitch *= 180/M_PI; 
    roll *= 180/M_PI; 
-     
-   printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);
 }
 
 
@@ -357,7 +241,6 @@ int rc;
    if (rc==EOF || rc!=3) goto cal_error;  
    fclose(fp);
 
-   /*
    fp = fopen(dev_file, "r");
    if (!fp) ERR(, "Cannot open deviation file %s: %s", dev_file, strerror(errno));
    
@@ -368,7 +251,7 @@ int rc;
    rc = fscanf(fp, "MG: %f, %f, %f\n", &deviation_MA[0], &deviation_MA[1], &deviation_MA[2]);
    if (rc==EOF || rc!=3) goto dev_error;   
    fclose(fp);   
-   */
+   
    return;
    
 cal_error:
@@ -378,16 +261,40 @@ cal_error:
    err_MA[0] = err_MA[1] = err_MA[2] = 0; 
    scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;       
    ERR(, "Cannot read data from calibration file %s", cal_file);
-/*   
+
 dev_error:
    fclose(fp);
    deviation_AL[0] = deviation_AL[1] = deviation_AL[2] = 0.0;
    deviation_GY[0] = deviation_GY[1] = deviation_GY[2] = 0.0; 
    deviation_MA[0] = deviation_MA[1] = deviation_MA[2] = 0.0;      
    ERR(, "Cannot read data from deviation file %s", dev_file);  
-   */
 }
  
+
+ /* Write the calibration data for accelerometer, gyroscope and magnetometer into a file */ 
+static void write_calibration_data(void)
+{
+FILE *fp;    
+
+   fp = fopen(cal_file, "w");
+   if (!fp) ERR(, "Cannot open calibration file %s: %s", cal_file, strerror(errno));
+
+   fprintf(fp, "AL: %d, %d, %d\n", err_AL[0], err_AL[1], err_AL[2]);
+   fprintf(fp, "GY: %d, %d, %d\n", err_GY[0], err_GY[1], err_GY[2]);   
+   fprintf(fp, "MGH: %d, %d, %d\n", err_MA[0], err_MA[1], err_MA[2]);    
+   fprintf(fp, "MGS: %.3f, %.3f, %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);     
+   fclose(fp);
+
+   fp = fopen(dev_file, "w");
+   if (!fp) ERR(, "Cannot open deviation file %s: %s", dev_file, strerror(errno));
+
+   fprintf(fp, "AL: %f, %f, %f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
+   fprintf(fp, "GY: %f, %f, %f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);
+   fprintf(fp, "MG: %f, %f, %f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
+   fclose(fp);    
+}
+
+
 
 
 // Send a single byte value to a register in the IMU
@@ -441,7 +348,12 @@ rw_error:
 
 /*************** Calibration functions *************************/
 
-static inline float standard_deviation(float s1, float s2, int32_t N)
+
+/*
+Calculate sample standard deviation of a group of N samples.
+It uses the sum of the samples (s1), and the sum of their squares (s2)
+*/
+static inline float standard_deviation(float s1, float s2, int N)
 {
    return sqrtf((N*s2-s1*s1)/(N*(N-1)));
 }
@@ -450,17 +362,17 @@ static inline float standard_deviation(float s1, float s2, int32_t N)
 /* 
  Calibrate accelerometer and gyroscope. The IMU should rest horizontal, so that
  measured accel values should be (0,0,1) and measured gyro values should be (0,0,0)
- It writes the measured error in global variables err_AL and err_GY.
+ It stores the measured bias in global variables err_AL and err_GY.
  It also calculates the standard deviation of the measured values.
- It writes the measured deviation in global variables deviation_AL and deviation_GY.
+ It stores the measured deviation in global variables deviation_AL and deviation_GY.
  */
 static void calibrate_accel_gyro(void)
 {
 int32_t samples=0; 
 int32_t s1_ax=0, s1_ay=0, s1_az=0;  // Sum of the accel samples
-int32_t s2_ax=0, s2_ay=0, s2_az=0;  // Sum of the squares of the accel samples
+int64_t s2_ax=0, s2_ay=0, s2_az=0;  // Sum of the squares of the accel samples
 int32_t s1_gx=0, s1_gy=0, s1_gz=0;  // Sum of the gyro samples
-int32_t s2_gx=0, s2_gy=0, s2_gz=0;  // Sum of the squares of the gyro samples
+int64_t s2_gx=0, s2_gy=0, s2_gz=0;  // Sum of the squares of the gyro samples
 int64_t start_tick, elapsed_useconds=0;
 const int cal_seconds = 10; // Number of seconds to take samples
    
@@ -497,12 +409,14 @@ const int cal_seconds = 10; // Number of seconds to take samples
          ay = buf[7]<<8 | buf[6]; ax = buf[9]<<8 | buf[8]; az = buf[11]<<8 | buf[10]; 
          az -= (int16_t)(1.0/aRes);  // Expected value for az is 1g, not 0g
          
-         s1_ax += ax; s2_ax += (int32_t)ax*(int32_t)ax; 
-         s1_ay += ay; s2_ay += (int32_t)ay*(int32_t)ay; 
-         s1_az += az; s2_az += (int32_t)az*(int32_t)az; 
-         s1_gx += gx; s2_gx += (int32_t)gx*(int32_t)gx; 
-         s1_gy += gy; s2_gy += (int32_t)gy*(int32_t)gy; 
-         s1_gz += gz; s2_gz += (int32_t)gz*(int32_t)gz;              
+         // Calculate the sum of the samples and of the squared samples
+         // Use 64 bit arithmetic for the sum of the squares, as 32 bit might overflow
+         s1_ax += ax; s2_ax += (int64_t)ax*(int64_t)ax; 
+         s1_ay += ay; s2_ay += (int64_t)ay*(int64_t)ay; 
+         s1_az += az; s2_az += (int64_t)az*(int64_t)az; 
+         s1_gx += gx; s2_gx += (int64_t)gx*(int64_t)gx; 
+         s1_gy += gy; s2_gy += (int64_t)gy*(int64_t)gy; 
+         s1_gz += gz; s2_gz += (int64_t)gz*(int64_t)gz;              
          samples++;
       }
       elapsed_useconds = esp_timer_get_time() - start_tick;   
@@ -540,14 +454,18 @@ rw_error:
 } 
 
 
-
+/*
+Step 1 of magnetometer calibration. 
+While the car is stationary, it reads samples in order to estimate their standard deviation.
+It stores the estimated values in global variable deviation_MA.
+*/
 static esp_err_t calculate_std_dev_magnetometer(void)
 {
 int64_t start_tick, elapsed_useconds = 0;
-int64_t s1_mx = 0, s1_my = 0, s1_mz = 0;
+int32_t s1_mx = 0, s1_my = 0, s1_mz = 0;
 int64_t s2_mx = 0, s2_my = 0, s2_mz = 0;
 int samples = 0;
-const int error_meas_seconds = 5;  // Number of seconds for measurement of std_dev
+const int error_meas_seconds = 5;  // Number of seconds for measurement
       
    oledBigMessage(0, "HORIZ.");
    oledBigMessage(1, "WAIT..."); 
@@ -564,24 +482,27 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement of std_d
       if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
       else ets_delay_us(delay*1000); 
 
-      /** Read magnetometer data, if ready **/
+      // Read magnetometer data, if ready
       rc = read_magnetometer(&mx, &my, &mz);
       if (rc < 0) return ESP_FAIL;
       if (rc == 1) {  // Data available
+         // Calculate the sum of the samples
          s1_mx += mx; s1_my += my; s1_mz += mz;
+         // Calculate the sum of the squared samples. Use 64 bit arithmetic, as 32 bit might overflow
          s2_mx += (int64_t)mx*(int64_t)mx; s2_my += (int64_t)my*(int64_t)my; s2_mz += (int64_t)mz*(int64_t)mz;
          samples++;
       }
-      elapsed_useconds = esp_timer_get_time() - start_tick;   
+      elapsed_useconds = esp_timer_get_time() - start_tick;
    } while (elapsed_useconds < error_meas_seconds*1E6);  // loop for given time
 
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL); 
-   // Calculate std deviation for the samples
+   
+   // Calculate std deviation oof the samples
    deviation_MA[0] = standard_deviation(s1_mx, s2_mx, samples);
    deviation_MA[1] = standard_deviation(s1_my, s2_my, samples);
    deviation_MA[2] = standard_deviation(s1_mz, s2_mz, samples);
-   printf("Magnetometer std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
+   printf("Magnetometer std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
    return ESP_OK;
 }
 
@@ -590,44 +511,43 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement of std_d
 
 /* 
  Calibrate magnetometer.
- It writes the measured error in global variables err_MA and scale_MA. 
- This corresponds to the hardiron and softiron effects respectively.
- The car should be rotated in all 3 axis, and then rotated in all directions.
- In future, it would be good to make sure that roll and pitch angles are evenly distributed in the calibration samples.
- The samples can be graphically viewed from the file mag_data.csv. It should be an ellipsoid.
+ In step 1, the car must stay stationary. During this time, many magnetometer samples are read,
+ in order to calculate the standard deviation of the sampes, per axis.
+ In step 2, the car must be rotated in all 3 axis and all directions, so that the magnetic field points
+ in every possible direction.  
+ The samples should be a sphere centered around the origin. However, due to 
+ hardiron and softiron effects, the origin is not the center (hardiron) and the sphere is an ellipsoid, 
+ because the 3 axis are stretched.
+ The measured error is estimated and stored in global variables err_MA (hardiron) and scale_MA (softiron).
+ These values are used later to correct the values read from the magnetometer.
  */
 static void calibrate_magnetometer(void)
 {
-//FILE *fp;   
-int64_t start_tick, elapsed_useconds = 0;
+int64_t start_tick, elapsed_useconds;
 SampleList_t sample_list = {.xvalues=NULL, .yvalues=NULL, .zvalues=NULL, .num_elems=0};
 int16_t min_x=INT16_MAX, min_y=INT16_MAX, min_z=INT16_MAX;
 int16_t max_x=INT16_MIN, max_y=INT16_MIN, max_z=INT16_MIN;
-const int cal_seconds = 60; // Number of seconds to take samples
+const int cal_seconds = 45; // Number of seconds to take samples
   
-   /*
-   fp = fopen("mag_data.csv", "w");  // This file is useful to see if the rotation adequately pictured the ellipsoid in all planes
-   if (!fp) ERR(, "Cannot open file: %s", strerror(errno));
-   fprintf(fp, "X;Y;Z\n");
-   */
-   int max_num_samples = cal_seconds * odr_m_modes[ODR_M];
-
-   if (!(sample_list.xvalues = calloc(max_num_samples, sizeof(int))) || 
-       !(sample_list.yvalues = calloc(max_num_samples, sizeof(int))) || 
-       !(sample_list.zvalues = calloc(max_num_samples, sizeof(int)))) {
-      fprintf(stderr, "%s: cannot allocate memory: %s\n", __func__, strerror(errno));
+   ESP_LOGI(TAG, "Calibrating magnetometer");
+   int max_num_samples = cal_seconds * odr_m_modes[ODR_M];  // Max number of samples to take, used to dimension memory needs
+   if (!(sample_list.xvalues = calloc(max_num_samples, sizeof(int32_t))) || 
+       !(sample_list.yvalues = calloc(max_num_samples, sizeof(int32_t))) || 
+       !(sample_list.zvalues = calloc(max_num_samples, sizeof(int32_t)))) {
+      ESP_LOGE(TAG, "Cannot allocate memory: %s", strerror(errno));
       goto rw_error; 
    }
 
-   printf("Calibrating magnetometer...\n");
-   if (calculate_std_dev_magnetometer() != ESP_OK) goto rw_error;   // Get standsrd deviation of magnetometer samples
-return;   
-   printf("Rotate robot car slowly in all directions for %d seconds...\n", cal_seconds);
-   pito(5, 1);    // Buzz for 5 tenths of a second, wait till done
+   // Step 1: calculate standard deviation
+   if (calculate_std_dev_magnetometer() != ESP_OK) goto rw_error;
+
+   // Step 2: rotate car and take samples, to estimate hardiron and softiron errors
+   printf("\nRotate robot car slowly in all directions for %d seconds...\n", cal_seconds);
    oledBigMessage(0, "ROTATE");
    oledBigMessage(1, "CAR...");
-   
+   pito(5, 1);    // Buzz for 5 tenths of a second, wait till done
    start_tick = esp_timer_get_time();
+   
    do {
       uint8_t byte;
       esp_err_t rc;
@@ -639,52 +559,50 @@ return;
       if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
       else ets_delay_us(delay*1000); 
 
-      /** Read magnetometer data, if ready **/
+      // Read magnetometer data, if ready
       ret = read_magnetometer(&mx, &my, &mz);
       if (ret < 0) goto rw_error;
       if (ret == 1) {  // Data available
+         // Store samples in array sample_list
          if (sample_list.num_elems < max_num_samples) {
             sample_list.xvalues[sample_list.num_elems] = mx; 
             sample_list.yvalues[sample_list.num_elems] = my; 
             sample_list.zvalues[sample_list.num_elems] = mz;
             sample_list.num_elems++;
-         }           
+         }
+         // Calculate limits of the ellipsoid: max and min values for all 3 axis
          if (mx>max_x) {max_x = mx;} if (my>max_y) {max_y = my;} if (mz>max_z) {max_z = mz;}
-         if (mx<min_x) {min_x = mx;} if (my<min_y) {min_y = my;} if (mz<min_z) {min_z = mz;}
-         //fprintf(fp, "%d;%d;%d\n", mx, my, mz);   
+         if (mx<min_x) {min_x = mx;} if (my<min_y) {min_y = my;} if (mz<min_z) {min_z = mz;} 
       }
       elapsed_useconds = esp_timer_get_time() - start_tick;   
    } while (elapsed_useconds < cal_seconds*1E6);  // loop for given time
    
-   //fclose(fp);
    pito(5, 1);    // Buzz for 5 tenths of a second, wait till done
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL);   
    
    /****** Now estimate hardiron and softiron effects ******/
-   /* Hardiron error, initial estimation */
+   // Hardiron error, initial estimation: the center of the ellipsoid
+   // This is estimated with the mean value of the extremes, for each axis
    err_MA[0] = (min_x + max_x)/2; err_MA[1] = (min_y + max_y)/2; err_MA[2] = (min_z + max_z)/2;
-   printf("Magnetometer hardiron bias: %d %d %d\n", err_MA[0], err_MA[1], err_MA[2]);
+   //printf("Magnetometer hardiron bias: %d %d %d\n", err_MA[0], err_MA[1], err_MA[2]);
        
-   /* Simplified softiron error estimate as starting point */
+   // Softiron error, initial estimation: the stretching of the axis (compared to a sphere)
+   // The axis are estimated based on the extremes, and the real sphere radius is estimated as their average
    int rad_x = (max_x - min_x)/2; int rad_y = (max_y - min_y)/2; int rad_z = (max_z - min_z)/2;     
    float rad_mean = (rad_x + rad_y + rad_z)/3.0;
    scale_MA[0] = rad_mean/rad_x; scale_MA[1] = rad_mean/rad_y; scale_MA[2] = rad_mean/rad_z; 
-   printf("Magnetometer softiron bias: %.2f %.2f %.2f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
+   //printf("Magnetometer softiron bias: %.3f %.3f %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
    
-   /*
    // Calculate a better approximation for err_MA and scale_MA, changing the global variables if succesful
    float mean_cuad_error = ellipsoid_fit(&sample_list);
-   if (mean_cuad_error > 0.02)   // Limit found experimentally
-      fprintf(stderr, "%s: Mean cuadratic error (%.3f) is too big, repeat calibration\n", __func__, mean_cuad_error);
-   */
+   if (mean_cuad_error > 0.02)   // Limit value found experimentally
+      ESP_LOGW(TAG, "Mean cuadratic error (%.3f) is too big, repeat calibration\n", mean_cuad_error);
    
    free(sample_list.xvalues); free(sample_list.yvalues); free(sample_list.zvalues);
-   printf("Done\n");
    return;
    
 rw_error:
-   //if (fp) fclose(fp);
    if (sample_list.xvalues) free(sample_list.xvalues); 
    if (sample_list.yvalues) free(sample_list.yvalues); 
    if (sample_list.zvalues) free(sample_list.zvalues);
@@ -699,16 +617,19 @@ rw_error:
 /* 
    Calculate a better approximation for err_MA and scale_MA when calibrating the magnetometer. 
    Do it by fitting the measured magnetic samples (obtained by slowly rotating the car) into an ellipsoid. 
-   It returns the mean cuadratic error of the samples.
+   It returns the mean cuadratic error of the fit.
    Non constant global variables accessed: err_MA, scale_MA, mRes. They must have correct values prior to call.
+   err_MA and scale_MA must have plausible values when this function is called, as it will start searching from these values.
    The variables err_MA and scale_MA are modified to reflect the new fit.
-   err_MA contains the coordinates of the center of the ellipsoid (Vx, Vy, Vz).
-   scale_MA contains the scaling factors of the ellipsoid (A, B, C).
+   err_MA contains the coordinates of the center of the ellipsoid (Vx, Vy, Vz): hardiron bias
+   scale_MA contains the scaling factors of the ellipsoid (A, B, C): softiron bias
    It is based on ideas from https://www.nxp.com/docs/en/application-note/AN4246.pdf
-   This ellipsoid is assumed to have axis parallel to X, Y and Z (ie, it is not rotated). This assumption is normally true.
+   
+   This ellipsoid is assumed to have its axis parallel to X, Y and Z (ie, it is not rotated). This assumption is normally true.
    The assumption implies that the ellipsoid fit matrix A is diagonal, leaving only three unknowns, A^2, B^2 and C^2.
    The inverse softiron matrix W^(-1) is then also diagonal, with coefficients A, B and C.
-   The function calculates the ellipsoid that fits best into the given samples, minimizing the sum of the square errors of all samples.
+   The function calculates the ellipsoid that fits best into the given samples, 
+   minimizing the cuadratic error: sum of the square errors of all samples with respect to the ellipsoid surface.
    In order to do that, it travels its path, starting from the given initial values in err_MA and scale_MA, along
    the opposite gradient of the error function until a minimum is found.
    The correct magnitude of the magnetic field cannot be calculated from the samples, 
@@ -725,7 +646,7 @@ float dA2, dB2, dC2;
 float err, init_err, min_err; 
 float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2 
    
-   const float Bm = lroundf(magnetic_field/mRes);  // Value of magnetic field in IMU units
+   const float Bm = roundf(magnetic_field/mRes);  // Value of magnetic field in IMU units
    /* Set initial point from global variables */
    Vx = (float)err_MA[0]; Vy = (float)err_MA[1]; Vz = (float)err_MA[2];
    A2 = scale_MA[0]*scale_MA[0]; B2 = scale_MA[1]*scale_MA[1]; C2 = scale_MA[2]*scale_MA[2];  
@@ -748,7 +669,7 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
       if (err>min_err && ++num_excess_err==8) break;  
       
       /* Calculate gradient of error function, using finite difference approximation */
-      const float delta = 0.001;
+      const float delta = 0.001;  // Small increment of variable, to compute gradient (partial derivatives)
       dA2 = (quad_error_function(Vx, Vy, Vz, A2+delta, B2, C2, Bm, sample_list) -
             quad_error_function(Vx, Vy, Vz, A2-delta, B2, C2, Bm, sample_list)) / (2*delta);
       dB2 = (quad_error_function(Vx, Vy, Vz, A2, B2+delta, C2, Bm, sample_list) -
@@ -764,22 +685,24 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
       
       /* Calculate new point in direction of negative gradient, separately for each 3 dimension space */
       float step = 1.0/(2+iter);  // we use 1.0 instead of 2.0 (as is usual eg in Frank–Wolfe algorithm) to get smaller steps
-      A2 -= dA2*step/sqrt(dA2*dA2+dB2*dB2+dC2*dC2);
-      B2 -= dB2*step/sqrt(dA2*dA2+dB2*dB2+dC2*dC2);  
-      C2 -= dC2*step/sqrt(dA2*dA2+dB2*dB2+dC2*dC2);  
+      float mod_gradient = sqrtf(dA2*dA2+dB2*dB2+dC2*dC2);
+      A2 -= dA2*step/mod_gradient;
+      B2 -= dB2*step/mod_gradient;  
+      C2 -= dC2*step/mod_gradient;  
       // The step must be higher for the center coordinates, otherwise they hardly move
-      Vx -= dVx*100*step/sqrt(dVx*dVx+dVy*dVy+dVz*dVz);
-      Vy -= dVy*100*step/sqrt(dVx*dVx+dVy*dVy+dVz*dVz);
-      Vz -= dVz*100*step/sqrt(dVx*dVx+dVy*dVy+dVz*dVz);     
+      mod_gradient = sqrtf(dVx*dVx+dVy*dVy+dVz*dVz);
+      Vx -= dVx*100*step/mod_gradient;
+      Vy -= dVy*100*step/mod_gradient;
+      Vz -= dVz*100*step/mod_gradient;     
    }
     
    /* A minimum was possibly found */
    if (min_err < init_err) {  // if error of new point is less than initial error, eureka
       err_MA[0] = lroundf(min_found[1]); err_MA[1] = lroundf(min_found[2]); err_MA[2] = lroundf(min_found[3]);
       scale_MA[0] = sqrtf(min_found[4]); scale_MA[1] = sqrtf(min_found[5]); scale_MA[2] = sqrtf(min_found[6]); 
-      printf("Vx:%d Vy:%d Vz:%d\n", err_MA[0],err_MA[1], err_MA[2]);
-      printf("A:%.2f B:%.2f C:%.2f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
-      printf("Minimum found, initial error=%.1f, final error=%.1f\n", init_err, min_err);
+      //printf("Vx:%d Vy:%d Vz:%d\n", err_MA[0],err_MA[1], err_MA[2]);
+      //printf("A:%.2f B:%.2f C:%.2f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
+      //printf("Minimum found, initial error=%.1f, final error=%.1f\n", init_err, min_err);
    }
    return min_err/sample_list->num_elems;  // Mean cuadratic error
 }
@@ -949,10 +872,9 @@ uint8_t byte;
    /************************** Handle calibration ********************/
    read_calibration_data();
    if (do_calibrate) {
-      printf("Start calibration\n");
       calibrate_accel_gyro();
       calibrate_magnetometer();
-      //write_calibration_data();
+      write_calibration_data();
       vTaskDelay(pdMS_TO_TICKS(1000));  // Sleep 1 second, so the user can continue the start process
    }
    
@@ -973,37 +895,15 @@ uint8_t byte;
    rc = read_discard_fifo_samples(2);  // Discard samples after FIFO activation
    if (rc != ESP_OK) goto rw_error; 
    
-   /************************* Final actions ***********************/   
-   // Initialize low pass filter for interpolating magnetometer data
-   rc = LPFilter_init(&filter_mx, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc != ESP_OK) goto init_error;  
-   rc = LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc != ESP_OK) goto init_error;    
-   rc = LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
-   if (rc != ESP_OK) goto init_error; 
+   /************************* Final actions ***********************/
    
-   /*
-   // Initialize low pass filter for accelerometer data
-   rc = LPFilter_init(&filter_ax, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
-   if (rc < 0) goto init_error;  
-   LPFilter_init(&filter_ay, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
-   if (rc < 0) goto init_error;    
-   LPFilter_init(&filter_az, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
-   if (rc < 0) goto init_error; 
-   LPFilter_setDCgain(&filter_ax, 1.0);  // No need for filter_ay and filter_az, as they share the LP_10_240_filter_taps  
-
-   // Initialize high pass filter for 1st order derivation
-   rc = LPFilter_init(&filter_d1_ax, HP_1st_deriv_filter_taps, sizeof(HP_1st_deriv_filter_taps)/sizeof(float));
-   if (rc < 0) goto init_error;    
-   */
-   
-   // Start the IMU reading timer
+   // Start the IMU reading timer, calling IMU_read every delay_ms
    uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add margin
    esp_timer_handle_t timer;
    const esp_timer_create_args_t timer_args = {
             .dispatch_method = ESP_TIMER_TASK,
             .callback = &IMU_read,
-            .arg = (void*)delay_ms,
+            .arg = (void*)NULL,
             .name = "IMU_read"
             };
 
@@ -1017,11 +917,6 @@ uint8_t byte;
 rw_error:
    //closeLSM9DS1();
    ERR(-1, "Cannot read/write data from IMU");
-
-   /* error handling if initialization failed */   
-init_error:
-   //closeLSM9DS1();
-   ERR(-1, "Error initializing the IMU");
 }
 
 
@@ -1073,9 +968,8 @@ static void IMU_read(void* arg)
 {
 static int64_t previous_tick;
 int64_t start_tick;
-uint32_t delay_should = (uint32_t)arg;
 
-int n, rc;   
+int rc;   
 uint8_t samples, byte;
 static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack
 char str[OLED_MAX_LINE_SIZE];
@@ -1108,11 +1002,13 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
    mx -= err_MA[0]; my -= err_MA[1]; mz -= err_MA[2];      
    /* Compensate for softiron and scale the result */
    mxr = mx*scale_MA[0]*mRes; myr = my*scale_MA[1]*mRes; mzr = mz*scale_MA[2]*mRes;   
-   
-   //if (!(count++%10)) printHeading(mxr, myr);
-   // snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrt(mxr*mxr+myr*myr+mzr*mzr));  
-   // oledWriteString(0, 6, str, false);  
-   
+  /*
+   if (!(count++%10)) {
+      //printHeading(mxr, myr);
+      snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrtf(mxr*mxr+myr*myr+mzr*mzr));  
+      oledWriteString(0, 6, str, false);  
+   }
+   */
    /**
    Now, read accel/gyro data. Read data from FIFO, as ODR of accel/gyro is higher
    than that of magnetometer. The accel/gyro stores samples in the FIFO until it is read.
@@ -1152,15 +1048,16 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       ax -= err_AL[0]; ay -= err_AL[1]; az -= err_AL[2]; 
       gx -= err_GY[0]; gy -= err_GY[1]; gz -= err_GY[2]; 
 
-      /* Store real values in float variables, apply scaling */
+      /* Store real values in floating point variables, apply scaling */
       axr = ax*aRes; ayr = ay*aRes; azr = az*aRes;      
       gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;  
 
       /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
       First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
       eliminate the spectral replica of the original signal. This interpolates the values.
-      The low pass filter is implemented as a single pole IIR filter. */
-      const float alpha = 0.02;  // This achieves a rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
+      The low pass filter is implemented as a single pole IIR filter: y(n) = a*x(n) + (1-a)*x(n-1), 0 < a < 1 */
+      const float alpha = 0.02;  // Rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
+      //const float alpha = 0.01;  // Rapid decay response, with 22 dB (5 Hz), 28 dB (10 Hz), 34 dB (20 Hz), 40 dB (40 Hz), 46 dB (fsample/2, 120 Hz)
       if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter
          mxrf = alpha*mxr + (1-alpha)*o_mxrf; myrf = alpha*myr + (1-alpha)*o_myrf; mzrf = alpha*mzr + (1-alpha)*o_mzrf;
       }
@@ -1172,10 +1069,14 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
-      //printOrientation(axr, ayr, azr, mxrf, myrf, mzrf);
-   
-   
-   
+      
+      getOrientation(axr, ayr, azr, mxrf, myrf, mzrf);  // Sets global variables roll, pitch, yaw, tilt;
+      //printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);  
+      if (!(count++%10)) {
+         snprintf(str, sizeof(str), "Yaw: %3.0f ", yaw);  
+         oledWriteString(0, 6, str, false);    
+      }
+      
    
    
    }
