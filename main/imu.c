@@ -113,8 +113,8 @@ static float deviation_MA[3];  // Measured standard deviation of x, y and z valu
 
 static const char *cal_file = "/spiffs/calibration.dat"; // File where calibration data is stored
 static const char *dev_file = "/spiffs/deviation.dat";   // File where standard deviation data is stored
-static const float declination = +1.866;    // Local magnetic declination as given by http://www.magnetic-declination.com/
-static const float magnetic_field = 0.458;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
+static const float declination = +1.962;    // Local magnetic declination as given by http://www.magnetic-declination.com/
+static const float default_magnetic_field = 0.459;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
 
 /* Madgwick filter variables */
 static float q[4] = {1.0, 0.0, 0.0, 0.0};    // vector to hold quaternion
@@ -144,7 +144,7 @@ static void calibrate_accel_gyro(void);
 static void calibrate_magnetometer(void);
 static esp_err_t calculate_std_dev_magnetometer(void);
 static int read_magnetometer(int16_t *mx, int16_t *my, int16_t *mz);
-static float ellipsoid_fit(const SampleList_t *sample_list);
+static float ellipsoid_fit(const SampleList_t *const sample_list, float Bm);
 static float quad_error_function(float Vx, float Vy, float Vz, float A, float B, float C, 
                                  float Bm, const SampleList_t *sample_list);
 /*
@@ -288,9 +288,9 @@ FILE *fp;
    fp = fopen(dev_file, "w");
    if (!fp) ERR(, "Cannot open deviation file %s: %s", dev_file, strerror(errno));
 
-   fprintf(fp, "AL: %f, %f, %f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
-   fprintf(fp, "GY: %f, %f, %f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);
-   fprintf(fp, "MG: %f, %f, %f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
+   fprintf(fp, "AL: %.1f, %.1f, %.1f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
+   fprintf(fp, "GY: %.1f, %.1f, %.1f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);
+   fprintf(fp, "MG: %.1f, %.1f, %.1f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
    fclose(fp);    
 }
 
@@ -434,12 +434,12 @@ const int cal_seconds = 10; // Number of seconds to take samples
    deviation_AL[0] = standard_deviation(s1_ax, s2_ax, samples);
    deviation_AL[1] = standard_deviation(s1_ay, s2_ay, samples);
    deviation_AL[2] = standard_deviation(s1_az, s2_az, samples); 
-   printf("Accelerometer std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
+   printf("Accelerometer std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
    
    deviation_GY[0] = standard_deviation(s1_gx, s2_gx, samples); 
    deviation_GY[1] = standard_deviation(s1_gy, s2_gy, samples); 
    deviation_GY[2] = standard_deviation(s1_gz, s2_gz, samples);
-   printf("Gyroscope std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);   
+   printf("Gyroscope std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);   
 
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL);   
@@ -502,7 +502,7 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement
    deviation_MA[0] = standard_deviation(s1_mx, s2_mx, samples);
    deviation_MA[1] = standard_deviation(s1_my, s2_my, samples);
    deviation_MA[2] = standard_deviation(s1_mz, s2_mz, samples);
-   printf("Magnetometer std dev: sigma_x=%.2f, sigma_y=%.2f, sigma_z=%.2f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
+   printf("Magnetometer std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
    return ESP_OK;
 }
 
@@ -527,7 +527,7 @@ int64_t start_tick, elapsed_useconds;
 SampleList_t sample_list = {.xvalues=NULL, .yvalues=NULL, .zvalues=NULL, .num_elems=0};
 int16_t min_x=INT16_MAX, min_y=INT16_MAX, min_z=INT16_MAX;
 int16_t max_x=INT16_MIN, max_y=INT16_MIN, max_z=INT16_MIN;
-const int cal_seconds = 45; // Number of seconds to take samples
+const int cal_seconds = 30; // Number of seconds to take samples
   
    ESP_LOGI(TAG, "Calibrating magnetometer");
    int max_num_samples = cal_seconds * odr_m_modes[ODR_M];  // Max number of samples to take, used to dimension memory needs
@@ -535,11 +535,11 @@ const int cal_seconds = 45; // Number of seconds to take samples
        !(sample_list.yvalues = calloc(max_num_samples, sizeof(int32_t))) || 
        !(sample_list.zvalues = calloc(max_num_samples, sizeof(int32_t)))) {
       ESP_LOGE(TAG, "Cannot allocate memory: %s", strerror(errno));
-      goto rw_error; 
+      goto cal_error; 
    }
 
    // Step 1: calculate standard deviation
-   if (calculate_std_dev_magnetometer() != ESP_OK) goto rw_error;
+   if (calculate_std_dev_magnetometer() != ESP_OK) goto cal_error;
 
    // Step 2: rotate car and take samples, to estimate hardiron and softiron errors
    printf("\nRotate robot car slowly in all directions for %d seconds...\n", cal_seconds);
@@ -561,7 +561,7 @@ const int cal_seconds = 45; // Number of seconds to take samples
 
       // Read magnetometer data, if ready
       ret = read_magnetometer(&mx, &my, &mz);
-      if (ret < 0) goto rw_error;
+      if (ret < 0) goto cal_error;
       if (ret == 1) {  // Data available
          // Store samples in array sample_list
          if (sample_list.num_elems < max_num_samples) {
@@ -592,22 +592,35 @@ const int cal_seconds = 45; // Number of seconds to take samples
    int rad_x = (max_x - min_x)/2; int rad_y = (max_y - min_y)/2; int rad_z = (max_z - min_z)/2;     
    float rad_mean = (rad_x + rad_y + rad_z)/3.0;
    scale_MA[0] = rad_mean/rad_x; scale_MA[1] = rad_mean/rad_y; scale_MA[2] = rad_mean/rad_z; 
-   //printf("Magnetometer softiron bias: %.3f %.3f %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
+   printf("Magnetometer softiron bias: %.3f %.3f %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
    
+   // Estimate total strength of magnetic field in IMU units. If the ellipsoid is almost a sphere,
+   // ie, its axis are very similar (5% error), then the softiron bias can be ignored and the field strength is the measured value
+   float imu_magnetic_field = default_magnetic_field / mRes;
+   if ((fabsf(scale_MA[1]/scale_MA[0]-1.0) < 0.05) && (fabsf(scale_MA[2]/scale_MA[0]-1.0) < 0.05)) {
+      imu_magnetic_field = rad_mean;
+   }
    // Calculate a better approximation for err_MA and scale_MA, changing the global variables if succesful
-   float mean_cuad_error = ellipsoid_fit(&sample_list);
-   if (mean_cuad_error > 0.02)   // Limit value found experimentally
+   float mean_cuad_error = ellipsoid_fit(&sample_list, imu_magnetic_field);
+   if (mean_cuad_error > 0.02) {  // Limit value found experimentally
       ESP_LOGW(TAG, "Mean cuadratic error (%.3f) is too big, repeat calibration\n", mean_cuad_error);
+      goto cal_error;
+   }
    
    free(sample_list.xvalues); free(sample_list.yvalues); free(sample_list.zvalues);
    return;
    
-rw_error:
+cal_error:
    if (sample_list.xvalues) free(sample_list.xvalues); 
    if (sample_list.yvalues) free(sample_list.yvalues); 
    if (sample_list.zvalues) free(sample_list.zvalues);
    err_MA[0] = err_MA[1] = err_MA[2] = 0; 
-   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;   
+   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;
+   oledBigMessage(0, "CAL");
+   oledBigMessage(1, "ERROR");
+   pito(10, 1);
+   oledBigMessage(0, NULL);
+   oledBigMessage(1, NULL);   
    ERR(, "Cannot calibrate magnetometer");   
 }
 
@@ -627,17 +640,17 @@ rw_error:
    
    This ellipsoid is assumed to have its axis parallel to X, Y and Z (ie, it is not rotated). This assumption is normally true.
    The assumption implies that the ellipsoid fit matrix A is diagonal, leaving only three unknowns, A^2, B^2 and C^2.
-   The inverse softiron matrix W^(-1) is then also diagonal, with coefficients A, B and C.
+   The inverse softiron matrix W^(-1) is then also diagonal, with values A, B and C.
    The function calculates the ellipsoid that fits best into the given samples, 
    minimizing the cuadratic error: sum of the square errors of all samples with respect to the ellipsoid surface.
    In order to do that, it travels its path, starting from the given initial values in err_MA and scale_MA, along
    the opposite gradient of the error function until a minimum is found.
    The correct magnitude of the magnetic field cannot be calculated from the samples, 
-   as all 3 axis can be subject to softiron deformation. So the approximation uses the global variable magnetic_field, 
-   which should contain the magnitude of the magnetic field in the location. A correct value is not needed for orientation
-   (ie, calculation of yaw, pitch and roll), so its accurate filling is optative.
+   as all 3 axis can be subject to softiron deformation. So the approximation uses the variable Bm, 
+   which should contain the magnitude in IMU units of the magnetic field in the location.
+   A correct value is not needed for orientation (ie, calculation of yaw, pitch and roll), so its accurate filling is optative.
 */
-static float ellipsoid_fit(const SampleList_t *const sample_list)
+static float ellipsoid_fit(const SampleList_t *const sample_list, float Bm)
 {
 float Vx, Vy, Vz;
 float dVx, dVy, dVz;
@@ -646,7 +659,6 @@ float dA2, dB2, dC2;
 float err, init_err, min_err; 
 float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2 
    
-   const float Bm = roundf(magnetic_field/mRes);  // Value of magnetic field in IMU units
    /* Set initial point from global variables */
    Vx = (float)err_MA[0]; Vy = (float)err_MA[1]; Vz = (float)err_MA[2];
    A2 = scale_MA[0]*scale_MA[0]; B2 = scale_MA[1]*scale_MA[1]; C2 = scale_MA[2]*scale_MA[2];  
@@ -690,10 +702,11 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
       B2 -= dB2*step/mod_gradient;  
       C2 -= dC2*step/mod_gradient;  
       // The step must be higher for the center coordinates, otherwise they hardly move
+      step *= 100;
       mod_gradient = sqrtf(dVx*dVx+dVy*dVy+dVz*dVz);
-      Vx -= dVx*100*step/mod_gradient;
-      Vy -= dVy*100*step/mod_gradient;
-      Vz -= dVz*100*step/mod_gradient;     
+      Vx -= dVx*step/mod_gradient;
+      Vy -= dVy*step/mod_gradient;
+      Vz -= dVz*step/mod_gradient;     
    }
     
    /* A minimum was possibly found */
@@ -710,25 +723,25 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
 
 /*
 Compute the total quadratic error of the ellipsoid fit given by the parameters Vx, Vy, Vz (the displacement, or hardiron)
-and A, B, C (the axis coefficients, or softiron). It uses the given magnetometer samples in the sample_list.
+and A2, B2, C2 (the axis coefficients squared, or softiron), all in IMU units. It uses the given magnetometer samples in the sample_list.
 Bm is the local magnetic field strength (in IMU scale, between -32768 and 32767).
-The error is the sum of the cuadratic errors of each sample with the given fit.
+The total error is the sum of the cuadratic error of each sample for the given fit.
 The ellipsoid equation is A^2*(Bx-Vx)^2+B^2*(By-Vy)^2+C^2*(Bz-Vz)^2 - Bm^2 = 0, so the 
-error of each sample measures how far from zero is each sample, squared.
+error of each sample measures how far from zero is each sample in that equation.
 */
 static float quad_error_function(float Vx, float Vy, float Vz, float A2, float B2, float C2, 
                             float Bm, const SampleList_t *const sample_list)
 {
-float cuad_err_total = 0.0;
+float quad_err_total = 0.0;
    
    for (int i=0; i < sample_list->num_elems; i++) {
       float ex = (sample_list->xvalues[i]-Vx)/Bm; 
       float ey = (sample_list->yvalues[i]-Vy)/Bm; 
       float ez = (sample_list->zvalues[i]-Vz)/Bm;
-      float err = A2*ex*ex + B2*ey*ey + C2*ez*ez - 1;
-      cuad_err_total += err * err;
+      float err = A2*ex*ex + B2*ey*ey + C2*ez*ez - 1;  // error of this sample in equation
+      quad_err_total += err * err;  // add the squared errors
    }   
-   return cuad_err_total;
+   return quad_err_total;
 }
 
 
@@ -966,9 +979,6 @@ Runs on CPU0, in a very high priority task
 */
 static void IMU_read(void* arg)
 {
-static int64_t previous_tick;
-int64_t start_tick;
-
 int rc;   
 uint8_t samples, byte;
 static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack
@@ -984,31 +994,20 @@ float mxrf, myrf, mzrf; // After filter
 static float o_mxrf, o_myrf, o_mzrf; // Previous values
 //float axrf, ayrf, azrf; // values after LPF
 //float daxr;
-
-   start_tick = esp_timer_get_time();
-   if (previous_tick == 0) previous_tick = start_tick;
-   
-   //printf("Delay since last IMU read: %llu ms\n", (start_tick-previous_tick)/1000);  
    
    /** Read magnetometer data, if ready **/
    int16_t mx, my, mz; // x, y, and z axis raw readings of the magnetometer
    rc = read_magnetometer(&mx, &my, &mz);  // Takes ca. 0.5 ms
    if (rc < 0) goto rw_error;
    if (rc == 0) {
-      ESP_LOGI(TAG, "No magnetometer data");
+      ESP_LOGW(TAG, "No magnetometer data");
       return;  // No magnetometer data yet
    }
    /* Substract measured error values (hardiron effects) */
    mx -= err_MA[0]; my -= err_MA[1]; mz -= err_MA[2];      
    /* Compensate for softiron and scale the result */
    mxr = mx*scale_MA[0]*mRes; myr = my*scale_MA[1]*mRes; mzr = mz*scale_MA[2]*mRes;   
-  /*
-   if (!(count++%10)) {
-      //printHeading(mxr, myr);
-      snprintf(str, sizeof(str), "M:%-4.0f mG", 1000*sqrtf(mxr*mxr+myr*myr+mzr*mzr));  
-      oledWriteString(0, 6, str, false);  
-   }
-   */
+
    /**
    Now, read accel/gyro data. Read data from FIFO, as ODR of accel/gyro is higher
    than that of magnetometer. The accel/gyro stores samples in the FIFO until it is read.
@@ -1032,7 +1031,7 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms for 7 samples
       if (rc < 0) goto rw_error;         
    }
-   // Process every sample
+   // Process samples
    for (int n=0; n<samples; n++) {
       /* These values are the raw signed 16-bit readings from the sensors */
       int16_t gx, gy, gz; // x, y, and z axis raw readings of the gyroscope
@@ -1055,7 +1054,7 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
       First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
       eliminate the spectral replica of the original signal. This interpolates the values.
-      The low pass filter is implemented as a single pole IIR filter: y(n) = a*x(n) + (1-a)*x(n-1), 0 < a < 1 */
+      The low pass filter is implemented as a single pole IIR filter: y(n) = a*x(n) + (1-a)*y(n-1), 0 < a < 1 */
       const float alpha = 0.02;  // Rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
       //const float alpha = 0.01;  // Rapid decay response, with 22 dB (5 Hz), 28 dB (10 Hz), 34 dB (20 Hz), 40 dB (40 Hz), 46 dB (fsample/2, 120 Hz)
       if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter
@@ -1077,11 +1076,12 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
          oledWriteString(0, 6, str, false);    
       }
       
+      
+      
    
    
    }
-      
-   previous_tick = start_tick;
+
    return;
    
 /* error handling if read operation from I2C bus failed */
