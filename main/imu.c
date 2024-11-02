@@ -160,7 +160,7 @@ Function to calculate heading, using magnetometer readings.
 It only works if the sensor is lying flat (z-axis normal to Earth).
 It is a non tilt-compensated compass.
 */
-void printHeading(float mx, float my)
+static void printHeading(float mx, float my)
 {
 float heading;
 char str[OLED_MAX_LINE_SIZE];
@@ -174,10 +174,11 @@ char str[OLED_MAX_LINE_SIZE];
 
 
 /* 
-This function prints the LSM9DS1's orientation based on the
+This function calculates the LSM9DS1's orientation based on the
 accelerometer and magnetometer data: its roll, pitch and yaw angles, in aerospace convention.
 It represents a 3D tilt-compensated compass.
 It also calculates the tilt: angle that the normal of the car forms with the vertical.
+It produces correct results only if the car is stationary (or it does not accelerate).
 
 Procedure according https://www.nxp.com/docs/en/application-note/AN4248.pdf, 
 https://www.nxp.com/docs/en/application-note/AN4249.pdf and https://www.nxp.com/docs/en/application-note/AN3461.pdf 
@@ -185,7 +186,7 @@ Angles according extrinsic rotation sequence x-y-z (https://en.wikipedia.org/wik
 which is equivalent to the intrinsic rotation z-y'-x'' (so the angles are the same): yaw -> pitch -> roll.
 See also https://en.wikipedia.org/wiki/Davenport_chained_rotations
 */
-void getOrientation(float ax, float ay, float az, float mx, float my, float mz)
+static void getOrientation(float ax, float ay, float az, float mx, float my, float mz)
 {
 float sinpitch, cospitch, sinroll, cosroll, rootayaz, rootaxayaz;
 const float alpha = 0.05;
@@ -222,6 +223,59 @@ const float alpha = 0.05;
 }
 
 
+/** I2C reading functions **/
+
+// Send a single byte value to a register in the IMU
+static esp_err_t i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
+{
+esp_err_t rc;
+uint8_t buf[2];
+    
+   buf[0] = reg;
+   buf[1] = val;
+   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   if (rc != ESP_OK) ERR(ESP_FAIL, "Error writing to IMU"); 
+   return ESP_OK;
+}
+
+
+// Send a single byte value to a register in the IMU and read a number of bytes as response
+static esp_err_t i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_t read_size)
+{
+esp_err_t rc;
+          
+   if (read_size == 0) return 0;
+   if (read_buf == NULL) return -1;
+   rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   if (rc != ESP_OK) ERR(ESP_FAIL, "Error reading from IMU"); 
+   return ESP_OK;
+}
+
+
+// Read and discard several samples of accel/gyro data, useful when initializing
+static int read_discard_fifo_samples(uint8_t samples)
+{
+uint8_t buf[FIFO_LINE_SIZE]; 
+esp_err_t rc;
+int delay;
+  
+   for (int i=0; i<samples; i++) {
+      delay = lroundf(1000.0/odr_ag_modes[ODR_AG]);  // Time to wait for new data to arrive, in ms
+      if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
+      else ets_delay_us(delay*1000); 
+      
+      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
+      if (rc != ESP_OK) goto rw_error;   
+   }
+   return 0;
+
+rw_error:
+   ERR(-1, "Cannot read/write data from IMU");   
+}
+
+
+
+/*************** Calibration functions *************************/
 
 /* Read the calibration data for accelerometer, gyroscope and magnetometer, if file exists */
 static void read_calibration_data(void)
@@ -271,7 +325,7 @@ dev_error:
 }
  
 
- /* Write the calibration data for accelerometer, gyroscope and magnetometer into a file */ 
+/* Write the calibration data for accelerometer, gyroscope and magnetometer into a file */ 
 static void write_calibration_data(void)
 {
 FILE *fp;    
@@ -293,60 +347,6 @@ FILE *fp;
    fprintf(fp, "MG: %.1f, %.1f, %.1f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
    fclose(fp);    
 }
-
-
-
-
-// Send a single byte value to a register in the IMU
-static esp_err_t i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
-{
-esp_err_t rc;
-uint8_t buf[2];
-    
-   buf[0] = reg;
-   buf[1] = val;
-   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (rc != ESP_OK) ERR(ESP_FAIL, "Error writing to IMU"); 
-   return ESP_OK;
-}
-
-
-// Send a single byte value to a register in the IMU and read a number of bytes as response
-static esp_err_t i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_t read_size)
-{
-esp_err_t rc;
-          
-   if (read_size == 0) return 0;
-   if (read_buf == NULL) return -1;
-   rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (rc != ESP_OK) ERR(ESP_FAIL, "Error reading from IMU"); 
-   return ESP_OK;
-}
-
-
-/* Read and discard several samples of accel/gyro data, useful when initializing */
-static int read_discard_fifo_samples(uint8_t samples)
-{
-uint8_t buf[FIFO_LINE_SIZE]; 
-esp_err_t rc;
-int delay;
-  
-   for (int i=0; i<samples; i++) {
-      delay = lroundf(1000.0/odr_ag_modes[ODR_AG]);  // Time to wait for new data to arrive, in ms
-      if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
-      else ets_delay_us(delay*1000); 
-      
-      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
-      if (rc != ESP_OK) goto rw_error;   
-   }
-   return 0;
-
-rw_error:
-   ERR(-1, "Cannot read/write data from IMU");   
-}
-
-
-/*************** Calibration functions *************************/
 
 
 /*
@@ -512,13 +512,13 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement
 /* 
  Calibrate magnetometer.
  In step 1, the car must stay stationary. During this time, many magnetometer samples are read,
- in order to calculate the standard deviation of the sampes, per axis.
+ in order to calculate the standard deviation of the samples, per axis.
  In step 2, the car must be rotated in all 3 axis and all directions, so that the magnetic field points
  in every possible direction.  
  The samples should be a sphere centered around the origin. However, due to 
  hardiron and softiron effects, the origin is not the center (hardiron) and the sphere is an ellipsoid, 
- because the 3 axis are stretched.
- The measured error is estimated and stored in global variables err_MA (hardiron) and scale_MA (softiron).
+ because the 3 axis are stretched (softiron).
+ The measured bias is estimated and stored in the global variables err_MA (hardiron) and scale_MA (softiron).
  These values are used later to correct the values read from the magnetometer.
  */
 static void calibrate_magnetometer(void)
@@ -527,7 +527,7 @@ int64_t start_tick, elapsed_useconds;
 SampleList_t sample_list = {.xvalues=NULL, .yvalues=NULL, .zvalues=NULL, .num_elems=0};
 int16_t min_x=INT16_MAX, min_y=INT16_MAX, min_z=INT16_MAX;
 int16_t max_x=INT16_MIN, max_y=INT16_MIN, max_z=INT16_MIN;
-const int cal_seconds = 30; // Number of seconds to take samples
+const int cal_seconds = 30; // Number of seconds to take samples when user rotates car
   
    ESP_LOGI(TAG, "Calibrating magnetometer");
    int max_num_samples = cal_seconds * odr_m_modes[ODR_M];  // Max number of samples to take, used to dimension memory needs
@@ -596,14 +596,16 @@ const int cal_seconds = 30; // Number of seconds to take samples
    
    // Estimate total strength of magnetic field in IMU units. If the ellipsoid is almost a sphere,
    // ie, its axis are very similar (5% error), then the softiron bias can be ignored and the field strength is the measured value
-   float imu_magnetic_field = default_magnetic_field / mRes;
+   // Otherwise, take value from the global variable default_magnetic_field
+   float imu_magnetic_field = default_magnetic_field / mRes;   // Convert from Gauss to IMU units
    if ((fabsf(scale_MA[1]/scale_MA[0]-1.0) < 0.05) && (fabsf(scale_MA[2]/scale_MA[0]-1.0) < 0.05)) {
-      imu_magnetic_field = rad_mean;
+      imu_magnetic_field = rad_mean;  // If ellipsoid is almost a sphere, take this value as valid
    }
+   
    // Calculate a better approximation for err_MA and scale_MA, changing the global variables if succesful
-   float mean_cuad_error = ellipsoid_fit(&sample_list, imu_magnetic_field);
-   if (mean_cuad_error > 0.02) {  // Limit value found experimentally
-      ESP_LOGW(TAG, "Mean cuadratic error (%.3f) is too big, repeat calibration\n", mean_cuad_error);
+   float mean_quad_error = ellipsoid_fit(&sample_list, imu_magnetic_field);  // Returns mean quadratic error value of new approximation
+   if (mean_quad_error > 0.02) {  // Limit value found experimentally
+      ESP_LOGW(TAG, "Mean quadratic error (%.3f) is too big, repeat calibration", mean_quad_error);
       goto cal_error;
    }
    
@@ -625,12 +627,10 @@ cal_error:
 }
 
 
-
-
 /* 
    Calculate a better approximation for err_MA and scale_MA when calibrating the magnetometer. 
    Do it by fitting the measured magnetic samples (obtained by slowly rotating the car) into an ellipsoid. 
-   It returns the mean cuadratic error of the fit.
+   It returns the mean quadratic error of the fit.
    Non constant global variables accessed: err_MA, scale_MA, mRes. They must have correct values prior to call.
    err_MA and scale_MA must have plausible values when this function is called, as it will start searching from these values.
    The variables err_MA and scale_MA are modified to reflect the new fit.
@@ -642,7 +642,7 @@ cal_error:
    The assumption implies that the ellipsoid fit matrix A is diagonal, leaving only three unknowns, A^2, B^2 and C^2.
    The inverse softiron matrix W^(-1) is then also diagonal, with values A, B and C.
    The function calculates the ellipsoid that fits best into the given samples, 
-   minimizing the cuadratic error: sum of the square errors of all samples with respect to the ellipsoid surface.
+   minimizing the quadratic error: sum of the square errors of all samples with respect to the ellipsoid surface of the fit.
    In order to do that, it travels its path, starting from the given initial values in err_MA and scale_MA, along
    the opposite gradient of the error function until a minimum is found.
    The correct magnitude of the magnetic field cannot be calculated from the samples, 
@@ -725,7 +725,7 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
 Compute the total quadratic error of the ellipsoid fit given by the parameters Vx, Vy, Vz (the displacement, or hardiron)
 and A2, B2, C2 (the axis coefficients squared, or softiron), all in IMU units. It uses the given magnetometer samples in the sample_list.
 Bm is the local magnetic field strength (in IMU scale, between -32768 and 32767).
-The total error is the sum of the cuadratic error of each sample for the given fit.
+The total error is the sum of the quadratic error of each sample for the given fit.
 The ellipsoid equation is A^2*(Bx-Vx)^2+B^2*(By-Vy)^2+C^2*(Bz-Vz)^2 - Bm^2 = 0, so the 
 error of each sample measures how far from zero is each sample in that equation.
 */
@@ -743,7 +743,6 @@ float quad_err_total = 0.0;
    }   
    return quad_err_total;
 }
-
 
 
 
@@ -962,8 +961,7 @@ esp_err_t rc;
 
 
 
-
-/* 
+/***
 This function is called periodically, with the rate of the magnetometer ODR.
 It reads the IMU data and feeds the Magdwick fusion filter or the 3D tilt compensated compass algorithm. 
 Both do the same and have the same results, but the fusion filter needs much longer to converge.
@@ -976,12 +974,12 @@ interpolated magnetometer data, so both sample rates are the same.
 
 CHECK It takes about 5 ms to complete (mostly between 4.5 and 5.5 ms) for ODR_M=40 Hz, ODR_AGG=238 Hz.
 Runs on CPU0, in a very high priority task
-*/
+***/
 static void IMU_read(void* arg)
 {
 int rc;   
 uint8_t samples, byte;
-static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack
+static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack; 32 is FIFO size
 char str[OLED_MAX_LINE_SIZE];
 static unsigned int samples_count, count, collision_sample;
 //static bool in_collision;
@@ -990,8 +988,7 @@ static unsigned int samples_count, count, collision_sample;
 float axr, ayr, azr;
 float gxr, gyr, gzr;
 float mxr, myr, mzr;
-float mxrf, myrf, mzrf; // After filter
-static float o_mxrf, o_myrf, o_mzrf; // Previous values
+static float o_mxr, o_myr, o_mzr; // Previous values
 //float axrf, ayrf, azrf; // values after LPF
 //float daxr;
    
@@ -1057,19 +1054,23 @@ static float o_mxrf, o_myrf, o_mzrf; // Previous values
       The low pass filter is implemented as a single pole IIR filter: y(n) = a*x(n) + (1-a)*y(n-1), 0 < a < 1 */
       const float alpha = 0.02;  // Rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
       //const float alpha = 0.01;  // Rapid decay response, with 22 dB (5 Hz), 28 dB (10 Hz), 34 dB (20 Hz), 40 dB (40 Hz), 46 dB (fsample/2, 120 Hz)
-      if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter
-         mxrf = alpha*mxr + (1-alpha)*o_mxrf; myrf = alpha*myr + (1-alpha)*o_myrf; mzrf = alpha*mzr + (1-alpha)*o_mzrf;
+      // Calculate new mxr myr, mzr values by filtering the existing values
+      if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter every N (upsampling_factor) samples
+         mxr = alpha*mxr + (1-alpha)*o_mxr; myr = alpha*myr + (1-alpha)*o_myr; mzr = alpha*mzr + (1-alpha)*o_mzr;
       }
-      else { // Insert zeros as input in filter (mxr=0, etc)
-         mxrf = (1-alpha)*o_mxrf; myrf = (1-alpha)*o_myrf; mzrf = (1-alpha)*o_mzrf;  
+      else { // Insert zeros as input in filter (mxr=0, etc) every N-1 samples
+         mxr = (1-alpha)*o_mxr; myr = (1-alpha)*o_myr; mzr = (1-alpha)*o_mzr;  
       }
-      o_mxrf = mxrf; o_myrf = myrf; o_mzrf = mzrf;  // Remember these output values for next sample
+      o_mxr = mxr; o_myr = myr; o_mzr = mzr;  // Remember these output values for next sample
       
-      mxrf *= upsampling_factor; myrf *= upsampling_factor; mzrf *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
+      mxr *= upsampling_factor; myr *= upsampling_factor; mzr *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
-      //printf("Magnetic field: %f\n", sqrtf(mxrf*mxrf+myrf*myrf+mzrf*mzrf));
+      //printf("Magnetic field: %f\n", sqrtf(mxr*mxr+myr*myr+mzr*mzr));
       
-      getOrientation(axr, ayr, azr, mxrf, myrf, mzrf);  // Sets global variables roll, pitch, yaw, tilt;
+      
+      /***** IMU data is available. Now perform whatever operations are needed with the obtained values *****/
+      
+      getOrientation(axr, ayr, azr, mxr, myr, mzr);  // Sets global variables roll, pitch, yaw, tilt;
       //printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);  
       if (!(count++%10)) {
          snprintf(str, sizeof(str), "Yaw: %3.0f ", yaw);  
