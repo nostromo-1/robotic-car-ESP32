@@ -585,6 +585,7 @@ uint32_t voltage, current, battery1;
       start_webserver();   // Start file server of spiffs filesystem
       esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // When both WiFi and BT are running, WiFi modem has to go down
    }
+   oledClear();
    
    // Queue used to communicate with wav playing task
    wav_queue = xQueueCreate(1, sizeof(char*));
@@ -720,7 +721,6 @@ void app_main(void)
        esp_system_abort(NULL);  // Or esp_deep_sleep_start();   
    }
    
-   oledClear();
    xMainTask = xTaskGetCurrentTaskHandle();
    startTasks();
    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for tasks to activate

@@ -102,10 +102,13 @@ static int upsampling_factor;  /* Ratio between both ODRs */
 static float gRes, aRes, mRes;
 
 /* Store error offset (bias) for calibration of accel/gyro and magnetometer */
-static int16_t err_AL[3];  // ex,ey,ez values (error for each axis in accelerometer)
-static int16_t err_GY[3];  // ex,ey,ez values (error for each axis in gyroscope)
-static int16_t err_MA[3];  // ex,ey,ez values (error for each axis in magnetometer, hardiron effects)
-static float scale_MA[3] = {1.0, 1.0, 1.0}; // ex,ey,ez values (error for each axis in magnetometer, softiron effects)
+static int16_t err_AL[3];  // ex,ey,ez values (error or bias for each axis in accelerometer)
+static int16_t err_GY[3];  // ex,ey,ez values (error or bias for each axis in gyroscope)
+static int16_t err_MA[3];  // ex,ey,ez values (error or bias for each axis in magnetometer, hardiron effects)
+static float scale_MA[3] = {1.0, 1.0, 1.0}; // ex,ey,ez values (scaling error for each axis in magnetometer, softiron effects)
+
+static float stderror_AL[3];  // Measured standard error of mean value for bias in x, y and z of accelerometer
+static float stderror_GY[3];  // Measured standard error of mean value for bias in x, y and z of gyroscope
 
 static float deviation_AL[3];  // Measured standard deviation of x, y and z values of accelerometer
 static float deviation_GY[3];  // Measured standard deviation of x, y and z values of gyroscope
@@ -209,7 +212,7 @@ const float alpha = 0.05;
    cospitch = rootayaz/rootaxayaz;
    
    /*********** Calculate yaw *************/
-   // yaw angle able to range between -180 and 180, positive westwardss
+   // yaw angle able to range between -180 and 180, positive westwards
    yaw = atan2f(mz*sinroll-my*cosroll, mx*cospitch+my*sinpitch*sinroll+mz*sinpitch*cosroll);
    
    /*********** Calculate tilt angle from vertical: cos(tilt)=cos(roll)*cos(pitch) *************/ 
@@ -217,7 +220,7 @@ const float alpha = 0.05;
    
    /*** Translate angles in radians to degrees ***/
    tilt *= 180/M_PI; 
-   yaw *= 180/M_PI; yaw -= declination; if (yaw<0) yaw += 360;  // yaw (heading) must be positive
+   yaw *= 180/M_PI; yaw -= declination; if (yaw < 0) yaw += 360;  // yaw (heading) must be positive
    pitch *= 180/M_PI; 
    roll *= 180/M_PI; 
 }
@@ -375,6 +378,7 @@ int32_t s1_gx=0, s1_gy=0, s1_gz=0;  // Sum of the gyro samples
 int64_t s2_gx=0, s2_gy=0, s2_gz=0;  // Sum of the squares of the gyro samples
 int64_t start_tick, elapsed_useconds=0;
 const int cal_seconds = 10; // Number of seconds to take samples
+const float conf95_factor = 1.96; // 95% of the area under a normal curve lies within approximately 1.96 standard deviations of the mean
    
    ESP_LOGI(TAG, "Calibrating accelerometer and gyroscope");
    oledBigMessage(0, "HORIZ.");
@@ -424,23 +428,29 @@ const int cal_seconds = 10; // Number of seconds to take samples
    
    // Calculate the mean of accelerometer biases and store it in variable err_AL
    err_AL[0] = s1_ax/samples; err_AL[1] = s1_ay/samples; err_AL[2] = s1_az/samples; 
-   printf("Accelerometer bias: %d %d %d\n", err_AL[0], err_AL[1], err_AL[2]);
-   
-   // Calculate the mean of gyroscope biases and store it in variable err_GY   
-   err_GY[0] = s1_gx/samples; err_GY[1] = s1_gy/samples; err_GY[2] = s1_gz/samples; 
-   printf("Gyroscope bias: %d %d %d\n", err_GY[0], err_GY[1], err_GY[2]);   
- 
-   // Calculate std deviation
+   // Calculate std deviation of samples and std error of bias
    deviation_AL[0] = standard_deviation(s1_ax, s2_ax, samples);
    deviation_AL[1] = standard_deviation(s1_ay, s2_ay, samples);
    deviation_AL[2] = standard_deviation(s1_az, s2_az, samples); 
-   printf("Accelerometer std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
-   
+   stderror_AL[0] = deviation_AL[0] / sqrtf(samples); stderror_AL[1] = deviation_AL[1] / sqrtf(samples); stderror_AL[2] = deviation_AL[2] / sqrtf(samples);
+   printf("95%% confidence interval of accelerometer bias: x:%d+-%.1f, y:%d+-%.1f, z:%d+-%.1f\n", err_AL[0], conf95_factor*stderror_AL[0], 
+                                                                                                  err_AL[1], conf95_factor*stderror_AL[1], 
+                                                                                                  err_AL[2], conf95_factor*stderror_AL[2]);
+   printf("Accelerometer standard deviation: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_AL[0], deviation_AL[1], deviation_AL[2]);
+
+   // Calculate the mean of gyroscope biases and store it in variable err_GY   
+   err_GY[0] = s1_gx/samples; err_GY[1] = s1_gy/samples; err_GY[2] = s1_gz/samples; 
+   // Calculate std deviation of samples and std error of bias
    deviation_GY[0] = standard_deviation(s1_gx, s2_gx, samples); 
    deviation_GY[1] = standard_deviation(s1_gy, s2_gy, samples); 
    deviation_GY[2] = standard_deviation(s1_gz, s2_gz, samples);
-   printf("Gyroscope std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);   
+   stderror_GY[0] = deviation_GY[0] / sqrtf(samples); stderror_GY[1] = deviation_GY[1] / sqrtf(samples); stderror_GY[2] = deviation_GY[2] / sqrtf(samples);
 
+   printf("95%% confidence interval of gyroscope bias: x:%d+-%.1f, y:%d+-%.1f, z:%d+-%.1f\n", err_GY[0], conf95_factor*stderror_GY[0], 
+                                                                                              err_GY[1], conf95_factor*stderror_GY[1], 
+                                                                                              err_GY[2], conf95_factor*stderror_GY[2]);
+   printf("Gyroscope standard deviation: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_GY[0], deviation_GY[1], deviation_GY[2]);   
+                                                                                                   
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL);   
    return;
@@ -465,7 +475,7 @@ int64_t start_tick, elapsed_useconds = 0;
 int32_t s1_mx = 0, s1_my = 0, s1_mz = 0;
 int64_t s2_mx = 0, s2_my = 0, s2_mz = 0;
 int samples = 0;
-const int error_meas_seconds = 5;  // Number of seconds for measurement
+const int error_meas_seconds = 8;  // Number of seconds for measurement
       
    oledBigMessage(0, "HORIZ.");
    oledBigMessage(1, "WAIT..."); 
@@ -486,6 +496,7 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement
       rc = read_magnetometer(&mx, &my, &mz);
       if (rc < 0) return ESP_FAIL;
       if (rc == 1) {  // Data available
+      //printf("%d;%d;%d\n", mx, my, mz);
          // Calculate the sum of the samples
          s1_mx += mx; s1_my += my; s1_mz += mz;
          // Calculate the sum of the squared samples. Use 64 bit arithmetic, as 32 bit might overflow
@@ -498,11 +509,10 @@ const int error_meas_seconds = 5;  // Number of seconds for measurement
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL); 
    
-   // Calculate std deviation oof the samples
+   // Calculate std deviation of the samples
    deviation_MA[0] = standard_deviation(s1_mx, s2_mx, samples);
    deviation_MA[1] = standard_deviation(s1_my, s2_my, samples);
    deviation_MA[2] = standard_deviation(s1_mz, s2_mz, samples);
-   printf("Magnetometer std dev: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);  
    return ESP_OK;
 }
 
@@ -585,14 +595,12 @@ const int cal_seconds = 30; // Number of seconds to take samples when user rotat
    // Hardiron error, initial estimation: the center of the ellipsoid
    // This is estimated with the mean value of the extremes, for each axis
    err_MA[0] = (min_x + max_x)/2; err_MA[1] = (min_y + max_y)/2; err_MA[2] = (min_z + max_z)/2;
-   //printf("Magnetometer hardiron bias: %d %d %d\n", err_MA[0], err_MA[1], err_MA[2]);
        
    // Softiron error, initial estimation: the stretching of the axis (compared to a sphere)
    // The axis are estimated based on the extremes, and the real sphere radius is estimated as their average
    int rad_x = (max_x - min_x)/2; int rad_y = (max_y - min_y)/2; int rad_z = (max_z - min_z)/2;     
    float rad_mean = (rad_x + rad_y + rad_z)/3.0;
    scale_MA[0] = rad_mean/rad_x; scale_MA[1] = rad_mean/rad_y; scale_MA[2] = rad_mean/rad_z; 
-   printf("Magnetometer softiron bias: %.3f %.3f %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
    
    // Estimate total strength of magnetic field in IMU units. If the ellipsoid is almost a sphere,
    // ie, its axis are very similar (5% error), then the softiron bias can be ignored and the field strength is the measured value
@@ -600,15 +608,20 @@ const int cal_seconds = 30; // Number of seconds to take samples when user rotat
    float imu_magnetic_field = default_magnetic_field / mRes;   // Convert from Gauss to IMU units
    if ((fabsf(scale_MA[1]/scale_MA[0]-1.0) < 0.05) && (fabsf(scale_MA[2]/scale_MA[0]-1.0) < 0.05)) {
       imu_magnetic_field = rad_mean;  // If ellipsoid is almost a sphere, take this value as valid
+      printf("Measured magnetic field: %.3f Gauss\n", imu_magnetic_field*mRes);
    }
    
-   // Calculate a better approximation for err_MA and scale_MA, changing the global variables if succesful
+   // Calculate a better approximation for err_MA and scale_MA, changing these global variables if succesful
    float mean_quad_error = ellipsoid_fit(&sample_list, imu_magnetic_field);  // Returns mean quadratic error value of new approximation
    if (mean_quad_error > 0.02) {  // Limit value found experimentally
       ESP_LOGW(TAG, "Mean quadratic error (%.3f) is too big, repeat calibration", mean_quad_error);
       goto cal_error;
    }
    
+   printf("Magnetometer hardiron bias: %d %d %d\n", err_MA[0], err_MA[1], err_MA[2]);
+   printf("Magnetometer softiron bias: %.3f %.3f %.3f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
+   printf("Magnetometer standard deviation: sigma_x=%.1f, sigma_y=%.1f, sigma_z=%.1f\n", deviation_MA[0], deviation_MA[1], deviation_MA[2]);
+      
    free(sample_list.xvalues); free(sample_list.yvalues); free(sample_list.zvalues);
    return;
    
@@ -620,7 +633,7 @@ cal_error:
    scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;
    oledBigMessage(0, "CAL");
    oledBigMessage(1, "ERROR");
-   pito(10, 1);
+   pito(10, 1);  // Buzz for 10 tenths of a second, wait till done
    oledBigMessage(0, NULL);
    oledBigMessage(1, NULL);   
    ERR(, "Cannot calibrate magnetometer");   
@@ -701,8 +714,8 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
       A2 -= dA2*step/mod_gradient;
       B2 -= dB2*step/mod_gradient;  
       C2 -= dC2*step/mod_gradient;  
-      // The step must be higher for the center coordinates, otherwise they hardly move
-      step *= 100;
+     
+      step *= 100;  // The step must be higher for the center coordinates, otherwise they hardly move
       mod_gradient = sqrtf(dVx*dVx+dVy*dVy+dVz*dVz);
       Vx -= dVx*step/mod_gradient;
       Vy -= dVy*step/mod_gradient;
@@ -886,7 +899,7 @@ uint8_t byte;
    if (do_calibrate) {
       calibrate_accel_gyro();
       calibrate_magnetometer();
-      write_calibration_data();
+      //write_calibration_data();
       vTaskDelay(pdMS_TO_TICKS(1000));  // Sleep 1 second, so the user can continue the start process
    }
    
