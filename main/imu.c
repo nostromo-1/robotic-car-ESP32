@@ -59,11 +59,12 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 #define WRITE_ATOMIC(var,value) atomic_store_explicit(&var, value, memory_order_release)
 
 #define I2C_BUS I2C_NUM_0   // i2c bus of IMU
-#define I2C_MASTER_TIMEOUT_MS   100
+#define I2C_MASTER_TIMEOUT_MS 100
 #define FIFO_LINE_SIZE 12   // Size of FIFO lines (12 bytes each)
 
 extern _Atomic bool collision;  // Car has crashed when moving forwards or backwards
 
+// struct used to store sample values read when calibrating
 typedef struct {
     int32_t *xvalues, *yvalues, *zvalues;
     int num_elems;
@@ -93,7 +94,7 @@ static const enum {M_ODR_0_625,M_ODR_1_25,M_ODR_2_5,M_ODR_5,M_ODR_10,M_ODR_20,M_
 static const float odr_m_modes[] = {0.625,1.25,2.5,5.0,10.0,20.0,40.0,80.0};  // Values in Hz
 
 static const float delta_t = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
-static int upsampling_factor;  /* Ratio between both ODRs */
+static int upsampling_factor;  // Ratio between both ODRs
 
 
 // gRes, aRes, and mRes store the current resolution for each sensor. 
@@ -150,11 +151,7 @@ static int read_magnetometer(int16_t *mx, int16_t *my, int16_t *mz);
 static float ellipsoid_fit(const SampleList_t *const sample_list, float Bm);
 static float quad_error_function(float Vx, float Vy, float Vz, float A, float B, float C, 
                                  float Bm, const SampleList_t *sample_list);
-/*
-static void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, float gy, float gz, 
-                                     float mx, float my, float mz);
-*/                                     
-                                     
+                                 
                 
 /** IMU functions **/
                                    
@@ -280,51 +277,49 @@ rw_error:
 
 /*************** Calibration functions *************************/
 
-/* Read the calibration data for accelerometer, gyroscope and magnetometer, if file exists */
-static void read_calibration_data(void)
+/* Read the calibration data for accelerometer, gyroscope and magnetometer, if file exists 
+   If file cannot be read, tell caller to calibrate IMU by returning -1 */
+static int read_calibration_data(void)
 {
 FILE *fp;  
 int rc;
-   
+
    fp = fopen(cal_file, "r");
-   if (!fp) ERR(, "Cannot open calibration file %s: %s", cal_file, strerror(errno));
+   if (!fp) goto nofile_error; //ERR(, "Cannot open calibration file %s: %s", cal_file, strerror(errno));
    rc = fscanf(fp, "AL: %hd, %hd, %hd\n", &err_AL[0], &err_AL[1], &err_AL[2]);
-   if (rc==EOF || rc!=3) goto cal_error;
+   if (rc==EOF || rc!=3) goto badfile_error;
    rc = fscanf(fp, "GY: %hd, %hd, %hd\n", &err_GY[0], &err_GY[1], &err_GY[2]);   
-   if (rc==EOF || rc!=3) goto cal_error;
+   if (rc==EOF || rc!=3) goto badfile_error;
    rc = fscanf(fp, "MGH: %hd, %hd, %hd\n", &err_MA[0], &err_MA[1], &err_MA[2]);
-   if (rc==EOF || rc!=3) goto cal_error;   
+   if (rc==EOF || rc!=3) goto badfile_error;   
    rc = fscanf(fp, "MGS: %f, %f, %f\n", &scale_MA[0], &scale_MA[1], &scale_MA[2]);   
-   if (rc==EOF || rc!=3) goto cal_error;  
+   if (rc==EOF || rc!=3) goto badfile_error;  
    fclose(fp);
 
    fp = fopen(dev_file, "r");
-   if (!fp) ERR(, "Cannot open deviation file %s: %s", dev_file, strerror(errno));
+   if (!fp) goto nofile_error; //ERR(, "Cannot open deviation file %s: %s", dev_file, strerror(errno));
    
    rc = fscanf(fp, "AL: %f, %f, %f\n", &deviation_AL[0], &deviation_AL[1], &deviation_AL[2]);
-   if (rc==EOF || rc!=3) goto dev_error;
+   if (rc==EOF || rc!=3) goto badfile_error;
    rc = fscanf(fp, "GY: %f, %f, %f\n", &deviation_GY[0], &deviation_GY[1], &deviation_GY[2]);
-   if (rc==EOF || rc!=3) goto dev_error;  
+   if (rc==EOF || rc!=3) goto badfile_error;  
    rc = fscanf(fp, "MG: %f, %f, %f\n", &deviation_MA[0], &deviation_MA[1], &deviation_MA[2]);
-   if (rc==EOF || rc!=3) goto dev_error;   
+   if (rc==EOF || rc!=3) goto badfile_error;   
    fclose(fp);   
    
-   return;
-   
-cal_error:
-   fclose(fp);
-   err_AL[0] = err_AL[1] = err_AL[2] = 0;
-   err_GY[0] = err_GY[1] = err_GY[2] = 0; 
-   err_MA[0] = err_MA[1] = err_MA[2] = 0; 
-   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;       
-   ERR(, "Cannot read data from calibration file %s", cal_file);
+   return 0;
 
-dev_error:
+nofile_error:
    fclose(fp);
+badfile_error:  
+   err_AL[0] = err_AL[1] = err_AL[2] = 0;
+   err_GY[0] = err_GY[1] = err_GY[2] = 0;
+   err_MA[0] = err_MA[1] = err_MA[2] = 0; 
+   scale_MA[0] = scale_MA[1] = scale_MA[2] = 1.0;
    deviation_AL[0] = deviation_AL[1] = deviation_AL[2] = 0.0;
    deviation_GY[0] = deviation_GY[1] = deviation_GY[2] = 0.0; 
    deviation_MA[0] = deviation_MA[1] = deviation_MA[2] = 0.0;      
-   ERR(, "Cannot read data from deviation file %s", dev_file);  
+   ERR(-1, "Calibration data not found. PLEASE CALIBRATE IMU!");
 }
  
 
@@ -376,14 +371,14 @@ int32_t s1_ax=0, s1_ay=0, s1_az=0;  // Sum of the accel samples
 int64_t s2_ax=0, s2_ay=0, s2_az=0;  // Sum of the squares of the accel samples
 int32_t s1_gx=0, s1_gy=0, s1_gz=0;  // Sum of the gyro samples
 int64_t s2_gx=0, s2_gy=0, s2_gz=0;  // Sum of the squares of the gyro samples
-int64_t start_tick, elapsed_useconds=0;
+int64_t start_tick, elapsed_useconds;
 const int cal_seconds = 10; // Number of seconds to take samples
 const float conf95_factor = 1.96; // 95% of the area under a normal curve lies within approximately 1.96 standard deviations of the mean
    
    ESP_LOGI(TAG, "Calibrating accelerometer and gyroscope");
    oledBigMessage(0, "HORIZ.");
    oledBigMessage(1, "WAIT...");
-   vTaskDelay(pdMS_TO_TICKS(1000));   // 1 second delay
+   vTaskDelay(pdMS_TO_TICKS(2000));   // 2 second delay, stabilize car
    
    start_tick = esp_timer_get_time();
    do {
@@ -411,8 +406,9 @@ const float conf95_factor = 1.96; // 95% of the area under a normal curve lies w
             right handed, and filter algorithms work correctly */
          gy = buf[1]<<8 | buf[0]; gx = buf[3]<<8 | buf[2]; gz = buf[5]<<8 | buf[4];
          ay = buf[7]<<8 | buf[6]; ax = buf[9]<<8 | buf[8]; az = buf[11]<<8 | buf[10]; 
+         //printf("%d;%d;%d\n", gx, gy, gz);
          az -= (int16_t)(1.0/aRes);  // Expected value for az is 1g, not 0g
-         
+
          // Calculate the sum of the samples and of the squared samples
          // Use 64 bit arithmetic for the sum of the squares, as 32 bit might overflow
          s1_ax += ax; s2_ax += (int64_t)ax*(int64_t)ax; 
@@ -471,7 +467,7 @@ It stores the estimated values in global variable deviation_MA.
 */
 static esp_err_t calculate_std_dev_magnetometer(void)
 {
-int64_t start_tick, elapsed_useconds = 0;
+int64_t start_tick, elapsed_useconds;
 int32_t s1_mx = 0, s1_my = 0, s1_mz = 0;
 int64_t s2_mx = 0, s2_my = 0, s2_mz = 0;
 int samples = 0;
@@ -482,10 +478,7 @@ const int error_meas_seconds = 8;  // Number of seconds for measurement
    start_tick = esp_timer_get_time();
    
    do {
-      uint8_t byte;
-      int rc;
       int16_t mx, my, mz; // x, y, and z axis readings of the magnetometer
-      uint8_t buf[FIFO_LINE_SIZE];
       
       // Wait for new data to arrive, acc. ODR selected (25 ms for 40 Hz)
       int32_t delay = lroundf(1000.0/odr_m_modes[ODR_M]);  // Time to wait for new data to arrive, in ms
@@ -493,10 +486,9 @@ const int error_meas_seconds = 8;  // Number of seconds for measurement
       else ets_delay_us(delay*1000); 
 
       // Read magnetometer data, if ready
-      rc = read_magnetometer(&mx, &my, &mz);
+      int rc = read_magnetometer(&mx, &my, &mz);
       if (rc < 0) return ESP_FAIL;
       if (rc == 1) {  // Data available
-      //printf("%d;%d;%d\n", mx, my, mz);
          // Calculate the sum of the samples
          s1_mx += mx; s1_my += my; s1_mz += mz;
          // Calculate the sum of the squared samples. Use 64 bit arithmetic, as 32 bit might overflow
@@ -678,8 +670,6 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
    
    /* Iterate a maximum of 50 times to find a minimum in the error function */
    for (int iter=0; iter<50;iter++) {
-      int num_excess_err;
-      
       /* Compute error of current point */
       err = quad_error_function(Vx, Vy, Vz, A2, B2, C2, Bm, sample_list);
       if (iter==0) init_err = err;  // Store error of initial point
@@ -688,10 +678,7 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
          min_err = min_found[0] = err; 
          min_found[1] = Vx; min_found[2] = Vy; min_found[3] = Vz; 
          min_found[4] = A2; min_found[5] = B2; min_found[6] = C2; 
-         num_excess_err = 0;
       }
-      /* If a minimum was not found, check that we do not exceed 8 iterations with no new minimum found */
-      if (err>min_err && ++num_excess_err==8) break;  
       
       /* Calculate gradient of error function, using finite difference approximation */
       const float delta = 0.001;  // Small increment of variable, to compute gradient (partial derivatives)
@@ -709,7 +696,7 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
             quad_error_function(Vx, Vy, Vz-delta, A2, B2, C2, Bm, sample_list)) / (2*delta);
       
       /* Calculate new point in direction of negative gradient, separately for each 3 dimension space */
-      float step = 1.0/(2+iter);  // we use 1.0 instead of 2.0 (as is usual eg in Frank–Wolfe algorithm) to get smaller steps
+      float step = 0.5/(2+iter);  // we use 0.5 instead of 2.0 (as is usual eg in Frank–Wolfe algorithm) to get smaller steps
       float mod_gradient = sqrtf(dA2*dA2+dB2*dB2+dC2*dC2);
       A2 -= dA2*step/mod_gradient;
       B2 -= dB2*step/mod_gradient;  
@@ -719,18 +706,16 @@ float min_found[7];  // err, Vx, Vy, Vx, A^2, B^2, C^2
       mod_gradient = sqrtf(dVx*dVx+dVy*dVy+dVz*dVz);
       Vx -= dVx*step/mod_gradient;
       Vy -= dVy*step/mod_gradient;
-      Vz -= dVz*step/mod_gradient;     
+      Vz -= dVz*step/mod_gradient;
    }
-    
+
    /* A minimum was possibly found */
    if (min_err < init_err) {  // if error of new point is less than initial error, eureka
       err_MA[0] = lroundf(min_found[1]); err_MA[1] = lroundf(min_found[2]); err_MA[2] = lroundf(min_found[3]);
       scale_MA[0] = sqrtf(min_found[4]); scale_MA[1] = sqrtf(min_found[5]); scale_MA[2] = sqrtf(min_found[6]); 
-      //printf("Vx:%d Vy:%d Vz:%d\n", err_MA[0],err_MA[1], err_MA[2]);
-      //printf("A:%.2f B:%.2f C:%.2f\n", scale_MA[0], scale_MA[1], scale_MA[2]);
-      //printf("Minimum found, initial error=%.1f, final error=%.1f\n", init_err, min_err);
+      printf("Minimum found, initial error=%.1f, final error=%.1f, mean quad error=%.3f\n", init_err, min_err, min_err/sample_list->num_elems);
    }
-   return min_err/sample_list->num_elems;  // Mean cuadratic error
+   return min_err/sample_list->num_elems;  // Mean quadratic error
 }
 
 
@@ -761,8 +746,8 @@ float quad_err_total = 0.0;
 
 /************************************************************
 Initialize IMU LSM9DS1
-Input: I2C address of accel/gyro and of magnetometer
-Output: Status (return value) and delay in ms to read the IMU (as parameter)
+Input: I2C address of accel/gyro and of magnetometer, indication whether to perform calibration of IMU
+Return value: 0 (OK), -1 (read/write error), -2 (must perform calibration)
 ************************************************************/
 int setupLSM9DS1(uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate)
 {
@@ -772,24 +757,17 @@ uint8_t byte;
    /***** Initial checks *****/
    assert(odr_ag_modes[ODR_AG] > odr_m_modes[ODR_M]);
    upsampling_factor = lroundf(odr_ag_modes[ODR_AG] / odr_m_modes[ODR_M]);
-   //printf("Interpolation factor: %d\n", upsampling_factor);
    
    // Check acelerometer/gyroscope   
    rc = i2cWriteReadBytes(accel_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
    if (rc != ESP_OK) goto rw_error;
-   if (byte != 0x68) {
-      //closeLSM9DS1();
-      ERR(-1, "Invalid accelerometer/gyroscope device");
-   }
+   if (byte != 0x68) ERR(-1, "Invalid accelerometer/gyroscope device");
    accelAddr = accel_addr;
    
    // Check magnetometer  
    rc = i2cWriteReadBytes(mag_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
    if (rc != ESP_OK) goto rw_error;
-   if (byte != 0x3D) {
-      //closeLSM9DS1();
-      ERR(-1, "Invalid magnetometer device");  
-   }
+   if (byte != 0x3D) ERR(-1, "Invalid magnetometer device");  
    magAddr = mag_addr;
      
    /************************* Set Magnetometer ***********************/
@@ -805,7 +783,7 @@ uint8_t byte;
    byte = 0x0; 
    rc = i2cWriteByte(magAddr, 0x21, byte);
    if (rc != ESP_OK) goto rw_error;   
-   mRes = 4.0f/32768;   // G/LSB
+   mRes = 4.0/32768;   // G/LSB
    
    // Activate magnetometer, CTRL_REG3_M
    // I2C: enabled (b0), 0 (b0), LP: No (b0), 0 (b0), 0 (b0), SPI: wo (b0), mode: Continuous (b00)
@@ -844,7 +822,7 @@ uint8_t byte;
    byte = (0x00<<5) + (0x0<<3) + 0x0; 
    rc = i2cWriteByte(accelAddr, 0x20, byte);
    if (rc != ESP_OK) goto rw_error; 
-   aRes = 2.0f/32768;   // g/LSB
+   aRes = 2.0/32768;   // g/LSB
 
    // Set accelerometer, CTRL_REG7_XL
    // HR: enabled (b1), DCF: ODR/9 (b10), FDS: internal filter bypassed (b0), HPIS1: filter bypassed (b0)
@@ -871,7 +849,7 @@ uint8_t byte;
    byte = (ODR_AG<<5) + (0x0<<3) + 0x01; 
    rc = i2cWriteByte(accelAddr, 0x10, byte);
    if (rc != ESP_OK) goto rw_error; 
-   gRes = 245.0f/32768;   // dps/LSB
+   gRes = 245.0/32768;   // dps/LSB
    
    // Set gyro, CTRL_REG2_G
    // INT_SEL: 0 (b00), OUT_SEL: 0 (b10) (output after LPF2)
@@ -895,11 +873,11 @@ uint8_t byte;
    if (rc != ESP_OK) goto rw_error; 
    
    /************************** Handle calibration ********************/
-   read_calibration_data();
+   if (read_calibration_data()==-1 && do_calibrate==false) return -2;  // Must calibrate IMU, cannot run further
    if (do_calibrate) {
       calibrate_accel_gyro();
       calibrate_magnetometer();
-      //write_calibration_data();
+      write_calibration_data();
       vTaskDelay(pdMS_TO_TICKS(1000));  // Sleep 1 second, so the user can continue the start process
    }
    
@@ -935,12 +913,10 @@ uint8_t byte;
    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 1000*delay_ms));
    ESP_LOGI(TAG, "IMU is read every %lu ms", delay_ms);
-
    return 0;
    
    /* error handling if read operation from I2C bus failed */
 rw_error:
-   //closeLSM9DS1();
    ERR(-1, "Cannot read/write data from IMU");
 }
 
@@ -961,7 +937,7 @@ esp_err_t rc;
 
    /* New magnetometer data in XYZ is available
       Read magnetometer data. X and Y axis are exchanged, and then Y is negated, 
-      so align the axis with tha ones used in this module for car orientation */
+      so align the axis with the ones used in this module for car orientation */
          
    rc = i2cWriteReadBytes(magAddr, 0x28, buf, sizeof(buf));  // Read 6 bytes (X,Y,Z axis), starting in OUT_X_L_M register
    if (rc != ESP_OK) return -1;   // Read error, error message already sent

@@ -194,7 +194,6 @@ static TaskHandle_t xMainTask;
 static QueueHandle_t wav_queue;
 static int LEDs[] = {0b0001, 0b0011, 0b0111, 0b1111};
 static const esp_app_desc_t* fw_description;
-static bool use_IMU;
 
 
 // program options, specified in menuconfig
@@ -530,7 +529,6 @@ const uint8_t wiimote_timeout = 20;  // Max time in seconds to wait for wiimote
    
    oledSetBitmap8x8(15*8, 0, NULL);  // 15: last position in line (0-15), clear BT icon
    oledBigMessage(0, "Scan... ");
-   //pito(5, 1);   // Pita 5 décimas para avisar que comienza búsqueda de mando
    
    ESP32Wiimote_init();
    ESP32Wiimote_addFilter(ACTION_IGNORE, FILTER_NUNCHUK_STICK | FILTER_NUNCHUK_BUTTON | FILTER_NUNCHUK_ACCEL); 
@@ -578,6 +576,8 @@ uint32_t voltage, current, battery1;
    // Re-scan button; button pressed gives a 0
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
+   
+   // Wifi code
    bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
    rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
    if (rc == 0) {   // wifi is up
@@ -591,11 +591,9 @@ uint32_t voltage, current, battery1;
    wav_queue = xQueueCreate(1, sizeof(char*));
    if (wav_queue == NULL) return 1;
 
-   // Inicializa altavoz
-   setupSound(AMPLI_PIN);
-   //setVolume(soundVolume);
+   setupSound(AMPLI_PIN);  // Initialize and setup sound
    
-   /* bocina */
+   // Buzzer
    gpio_reset_pin(bocina.pin);
    gpio_set_pull_mode(bocina.pin, GPIO_PULLDOWN_ONLY);
    gpio_set_direction(bocina.pin, GPIO_MODE_OUTPUT);
@@ -606,19 +604,22 @@ uint32_t voltage, current, battery1;
    if (setupMotor(&m_izdo)) return 1;
    if (setupMotor(&m_dcho)) return 1;
    
-   //setupBMP280(BMP280_I2C, TIMER4);  // Setup temperature/pressure sensor
-
    if (setupWiimote()) return 1;
-   
+      
    oledBigMessage(0, "CALIB?");
    vTaskDelay(pdMS_TO_TICKS(2000));
    bool do_calibrate = (gpio_get_level(mando.scan_pin) == 0);  // if button is pressed, the user wants to calibrate IMU
    oledBigMessage(0, NULL);
    while (gpio_get_level(mando.scan_pin) == 0) vTaskDelay(pdMS_TO_TICKS(100));   // Wait till user releases button
-   if (setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate) == 0) { // Setup IMU sensor
-      use_IMU = true;   
+   rc = setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate);  // Setup IMU sensor
+   if (rc == -2) {
+      oledBigMessage(0, "PLEASE");
+      oledBigMessage(1, "CALIB ME");
+      pito(10, 1);    // Buzz for 10 tenths of a second, wait till done
+      esp_system_abort("Must calibrate IMU first");
    }
-   
+   //if (rc == 0) use_IMU = true;
+      
    if (setupSonarHCSR04()) return 1;
       
    // Call wmScan when button is pressed
