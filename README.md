@@ -1,5 +1,5 @@
 # robotic-car-ESP32
-Project of a robotic car with an ESP32 as control unit. It is equivalent to the Raspberry Pi version.
+Project of a robotic car with an ESP32 as control unit.
 
 This project is about building a hobby robotic car.
 It is a 4WD or 2WD car, with a ESP32 as MCU, and controlled by a wiimote.
@@ -37,7 +37,7 @@ The following parts are needed to build it:
 * Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the ESP32 board comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
 
 ## Software
-The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.1 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/release-v5.1/esp32/get-started/index.html).
+The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.3 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/release-v5.1/esp32/get-started/index.html).
 
 After installing the environment and copying the source files, run `idf.py build` followed by `idf.py flash`.
 
