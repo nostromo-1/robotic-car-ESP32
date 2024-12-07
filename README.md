@@ -60,6 +60,7 @@ Switch on power on the car. The startup sequence begins:
 * Start bluetooth connection with wiimote
   * The text `Scan...` will appear on the display. Then, press buttons '1' and '2' on the wiimote. The car will find the wiimote and attach to it.
   * The wiimote will vibrate as acknowledment of the connection, and its leds will be lit according to the selected car speed
+  * A bluetooth symbol will be displayed on the top right corner of the display
 * Start IMU calibration sequence
   * The text `CALIB?` will appear on the display. If you want to calibrate the IMU, you can now press the push button until the text disappears. This step is mandatory in the first run of the car; if you do not do it, the car will display `PLEASE CALIB ME` and abort
   * If you chose to calibrate, it starts the sequence:
@@ -69,7 +70,11 @@ Switch on power on the car. The startup sequence begins:
 * Other components will be initialized, and the display will leave inversion state
 * It checks the battery status. If it is too low, it will read a text over the loudspeaker ("Help help, my battery is low and it is getting dark"). Otherwise, it will say "I am ready for operation"
 * It displays `Ready` and enters normal operation, waiting for user interaction via the wiimote
+* It displays the distance to an obstacle in front of it in the first row of the display, and the voltage and current consumption in the second row
 
-Now, you can control the car: press 'A' to move forward.
+Now, you can control the car: press 'A' to move forward. Battery status will be permanently monitored. If it is too low, it will abort.
+
+This ![video](/images/IMG_20241207_122717.jpg) shows the while startup sequence.
+
 
 
