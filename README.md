@@ -23,6 +23,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * If the scan button is pressed, it starts scanning for wiimotes and connects to one.
 * It displays status messages in a display. It also shows its orientation (roll, pitch and yaw angles).
 * It features a KARR-type scanner :-)
+* It communicates via wifi, for example it reads current time and date from an NTP server. Initial wifi configuration is via WPS
 
 ## Parts
 The following parts are needed to build it:
@@ -39,12 +40,35 @@ The following parts are needed to build it:
 * Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the ESP32 board comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
 
 ## Software
-The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.3 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/release-v5.1/esp32/get-started/index.html).
+The robot is programmed in C using the Espressif environment (not Arduino). It is tested on the Espressif v5.3 version. Please refer to the [installation instructions](https://docs.espressif.com/projects/esp-idf/en/v5.3.2/esp32/get-started/index.html).
 
 After installing the environment and copying the source files, run `idf.py build` followed by `idf.py flash`.
 
 ## Operation
-Switch on power on the car. The text "Scan..." will appear on the display. Then, press buttons '1' and '2' on the wiimote. The car will find the wiimote and attach to it. 
+Switch on power on the car. The startup sequence begins:
+* Initialize display and light it, as life sign (the display shows all text inverted, i.e., black on blue)
+* Write the project name and firmware version in the first 2 lines of the display
+* Initialize power check system (voltage and current monitoring). If voltage is too low (batteries are dying) it will abort start
+* Start wifi connection
+  * If no credentials are stored in NVRAM (this is your first run) or the push button is pressed, it will run a WPS initialization: it will display `WPS` and `Press WPS button in wifi router` in the display. If you want wifi, then press the WPS button on your router within 30 seconds
+  * Establish a wifi connection with the router and store the credentials in NVRAM, so next time you do not need to use WPS
+  * If the wifi connection is successful:
+    * write the IP address and the router SSID on the display
+    * get time and date from an NTP server
+    * if the battery is good enough, check if there is a new firmware version in github; if so, download and install it, and reboot
+    * start a small web server, used to retrieve configuration files to a host (to examine them)
+* Start bluetooth connection with wiimote
+  * The text `Scan...` will appear on the display. Then, press buttons '1' and '2' on the wiimote. The car will find the wiimote and attach to it.
+  * The wiimote will vibrate as acknowledment of the connection, and its leds will be lit according to the selected car speed
+* Start IMU calibration sequence
+  * The text `CALIB?` will appear on the display. If you want to calibrate the IMU, you can now press the push button until the text disappears. This step is mandatory in the first run of the car; if you do not do it, the car will display `PLEASE CALIB ME` and abort
+  * If you chose to calibrate, it starts the sequence:
+   * Accelerometer and gyroscope calibration: The text `HORIZ. WAIT...` will appear on the display. Leave the car horizontal and quiet for 10 seconds.
+   * Magnetometer error deviation estimation: The text `HORIZ. WAIT...` stays on the display. Leave the car horizontal and quiet for 8 more seconds.
+   * Magnetometer calibration: The text `ROTATE CAR...` will appear on the display, and the buzzer will briefly piep. Slowly turn around the car in all directions, over all 3 axis, for 30 seconds, until the buzzer pieps again.
+* Other components will be initialized, and the display will leave inversion state
+* It checks the battery status. If it is too low, it will read a text over the loudspeaker ("Help help, my battery is low and it is getting dark"). Otherwise, it will say "I am ready for operation"
+* It displays `Ready` and enters normal operation, waiting for user interaction via the wiimote
 
 Now, you can control the car: press 'A' to move forward.
 
