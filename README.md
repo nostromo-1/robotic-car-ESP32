@@ -1,6 +1,8 @@
 # robotic-car-ESP32
 Project of a robotic car with an ESP32 as control unit.
 
+![](/images/IMG_20241207_122717.jpg)
+
 This project is about building a hobby robotic car.
 It is a 4WD or 2WD car, with a ESP32 as MCU, and controlled by a wiimote.
 It needs some external electronics.
