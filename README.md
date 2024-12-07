@@ -26,7 +26,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * It communicates via wifi, for example it reads current time and date from an NTP server. Initial wifi configuration is via WPS
 
 ## Parts
-The following parts are needed to build it:
+The following parts are needed to build it (see the schematics directory):
 * Car chasis. For example, https://leantec.es/tienda/chasis-robot-4wd-chasis-robot-de-4-ruedas/ or https://leantec.es/tienda/chassis-2wd-smart-car-chassis-arduino-robot/
 * 6V DC motors. If 4WD: 4 motors. If 2WD, then 2 motors (in that case, I use motors with a wheel Hall encoder, [DFRobot FIT0450](https://www.dfrobot.com/product-1457.html), in order to make the car run in a straight line using a PID control loop)
 * Motor controller: a L298N based circuit board, like https://www.electrohobby.es/driver-dc/209-driver-motor-l298n.html
@@ -34,7 +34,7 @@ The following parts are needed to build it:
 * Display module SSD1306
 * An inertial module unit based on LSM9DS1 (controlled via I2C), like https://learn.adafruit.com/adafruit-lsm9ds1-accelerometer-plus-gyro-plus-magnetometer-9-dof-breakout
 * An ESP32 development board, like [this](https://www.mouser.es/ProductDetail/Espressif-Systems/ESP32-DevKitC-32E?qs=GedFDFLaBXFpgD0kAZWDrQ%3D%3D). It needs Bluetooth classic, so it must be the ESP32 (and not one of the variants). The WROOM module is enough, with 4M flash and no PSRAM.
-* Transistors, capacitors, resistors, and scan button. A 6V buzzer. See the schematics directory.
+* Transistors, capacitors, resistors, and scan button. A 6V buzzer.
 * For the audio amplifier: a LM386 integrated circuit, an 8 ohm small speaker and some resistors and capacitors. See the schematics. The audio signal is taken from the GPIO using the internal DAC, so an analogue amplifier is enough. Alternatively, you can use another amplifier like one based on [TPA2005D1](https://www.sparkfun.com/products/11044).
 * For the battery status monitor: a PCF8591.
 * Power supply: two 18650 type batteries in series, protected. I use 2600 mAh Nitecore. The 5V supply for the ESP32 board comes from a switching regulator. I use the [S7V7F5](https://www.pololu.com/product/2119). Alternatively, you can use 6 NiMH AA batteries.
@@ -47,7 +47,7 @@ After installing the environment and copying the source files, run `idf.py build
 ## Operation
 Switch on power on the car. The startup sequence begins:
 * Initialize display and light it, as life sign (the display shows all text inverted, i.e., black on blue)
-* Write the project name and firmware version in the first 2 lines of the display
+* Show the project name and firmware version in the first 2 lines of the display
 * Initialize power check system (voltage and current monitoring). If voltage is too low (batteries are dying) it will abort start
 * Start wifi connection
   * If no credentials are stored in NVRAM (this is your first run) or the push button is pressed, it will run a WPS initialization: it will display `WPS` and `Press WPS button in wifi router` in the display. If you want wifi, then press the WPS button on your router within 30 seconds
@@ -64,15 +64,15 @@ Switch on power on the car. The startup sequence begins:
 * Start IMU calibration sequence
   * The text `CALIB?` will appear on the display. If you want to calibrate the IMU, you can now press the push button until the text disappears. This step is mandatory in the first run of the car; if you do not do it, the car will display `PLEASE CALIB ME` and abort
   * If you chose to calibrate, it starts the sequence:
-   * Accelerometer and gyroscope calibration: The text `HORIZ. WAIT...` will appear on the display. Leave the car horizontal and quiet for 10 seconds.
-   * Magnetometer error deviation estimation: The text `HORIZ. WAIT...` stays on the display. Leave the car horizontal and quiet for 8 more seconds.
-   * Magnetometer calibration: The text `ROTATE CAR...` will appear on the display, and the buzzer will briefly piep. Slowly turn around the car in all directions, over all 3 axis, for 30 seconds, until the buzzer pieps again.
+    * Accelerometer and gyroscope calibration: The text `HORIZ. WAIT...` will appear on the display. Leave the car horizontal and quiet for 10 seconds
+    * Magnetometer error deviation estimation: The text `HORIZ. WAIT...` stays on the display. Leave the car horizontal and quiet for 8 more seconds
+    * Magnetometer calibration: The text `ROTATE CAR...` will appear on the display, and the buzzer will briefly piep. Slowly turn around the car in all directions, over all 3 axis, for 30 seconds, until the buzzer pieps again
 * Other components will be initialized, and the display will leave inversion state
 * It checks the battery status. If it is too low, it will read a text over the loudspeaker ("Help help, my battery is low and it is getting dark"). Otherwise, it will say "I am ready for operation"
 * It displays `Ready` and enters normal operation, waiting for user interaction via the wiimote
 * It displays the distance to an obstacle in front of it in the first row of the display, and the voltage and current consumption in the second row
 
-Now, you can control the car: press 'A' to move forward. Battery status will be permanently monitored. If it is too low, it will abort.
+Now, you can control the car: press 'A' to move forward. Battery status will be permanently monitored: if it is too low, it will abort.
 
 This video shows the startup sequence:
 
