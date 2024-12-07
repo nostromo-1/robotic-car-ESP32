@@ -74,7 +74,8 @@ Switch on power on the car. The startup sequence begins:
 
 Now, you can control the car: press 'A' to move forward. Battery status will be permanently monitored. If it is too low, it will abort.
 
-This video (https://github.com/nostromo-1/robotic-car-ESP32/blob/ae9a61cf9c39601634d9db2e0c2c7bd71b6ec5b6/images/car_boot.mp4) shows the while startup sequence.
+
+This video (https://raw.githubusercontent.com/nostromo-1/robotic-car-ESP32/master/images/car_boot.mp4)) shows the while startup sequence.
 
 
 
