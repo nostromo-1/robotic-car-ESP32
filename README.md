@@ -75,6 +75,7 @@ Switch on power on the car. The startup sequence begins:
 Now, you can control the car: press 'A' to move forward. Battery status will be permanently monitored. If it is too low, it will abort.
 
 This video shows the startup sequence:
+
 https://github.com/user-attachments/assets/9085112a-0983-4f0e-8d11-f1e8eb150cce
 
 END
