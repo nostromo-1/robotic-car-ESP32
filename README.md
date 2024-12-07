@@ -24,9 +24,10 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * It displays status messages in a display. It also shows its orientation (roll, pitch and yaw angles).
 * It features a KARR-type scanner :-)
 * It communicates via wifi, for example it reads current time and date from an NTP server. Initial wifi configuration is via WPS
+* It updates itself over the air when starting (firmware OTA update from github)
 
 ## Parts
-The following parts are needed to build it (see the schematics directory):
+The following parts are needed to build it (see the schematics folder):
 * Car chasis. For example, https://leantec.es/tienda/chasis-robot-4wd-chasis-robot-de-4-ruedas/ or https://leantec.es/tienda/chassis-2wd-smart-car-chassis-arduino-robot/
 * 6V DC motors. If 4WD: 4 motors. If 2WD, then 2 motors (in that case, I use motors with a wheel Hall encoder, [DFRobot FIT0450](https://www.dfrobot.com/product-1457.html), in order to make the car run in a straight line using a PID control loop)
 * Motor controller: a L298N based circuit board, like https://www.electrohobby.es/driver-dc/209-driver-motor-l298n.html
