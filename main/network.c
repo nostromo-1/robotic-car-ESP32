@@ -256,13 +256,13 @@ wifi_config_t wifi_config;
        char str[OLED_MAX_LINE_SIZE+1];
 
        esp_netif_get_ip_info(sta_netif, &ip_info);
-       snprintf(str, sizeof(str), IPSTR, IP2STR(&ip_info.ip));
+       snprintf(str, sizeof(str), IPSTR, IP2STR(&ip_info.ip));  // write IP addreess on display
        oledWriteString(0, 5, str, false);
        
        esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config);
        size_t ssidLen = strlen((char*)wifi_config.sta.ssid);
        ESP_LOGI(TAG, "Connected to AP SSID: %s", wifi_config.sta.ssid);
-       snprintf(str, sizeof(str), "%s", wifi_config.sta.ssid);
+       snprintf(str, sizeof(str), "%s", wifi_config.sta.ssid);  // write station SSID on display (it can use 2 lines if it is large)
        oledWriteString(0, 6, str, false);
        if (ssidLen > OLED_MAX_LINE_SIZE) {
          snprintf(str, sizeof(str), "%s", wifi_config.sta.ssid + OLED_MAX_LINE_SIZE);
