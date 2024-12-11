@@ -8,9 +8,8 @@ The following table is used:
 ```
 # Name,   Type, SubType, Offset,  Size, Flags
 # Note: if you have increased the bootloader size, make sure to update the offsets to avoid overlap
-nvs,      data, nvs,     ,        0x4000,
+nvs,      data, nvs,     ,        0x5000,
 otadata,  data, ota,     ,        0x2000
-phy_init, data, phy,     ,        0x1000,
 app0,     app, ota_0,    ,        1728K,
 app1,     app, ota_1,    ,        1728K,
 storage,  data, spiffs,  ,        576K,
@@ -19,7 +18,6 @@ storage,  data, spiffs,  ,        576K,
 The sections are as follows:
 * nvs: the Non-Volatile Storage (for example, used for the wifi credentials)
 * otadata: the OTA data partition which stores information about the currently selected OTA app slot; this is used for downloading firmware from github automatically
-* phy_init: for storing PHY initialisation data
 * app0: two slots for the firmware, only one is active
 * app1: two slots for the firmware, only one is active
 * storage: a [spiffs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/storage/spiffs.html) filesystem (used to store sound files and the IMU calibration results)
