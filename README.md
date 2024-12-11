@@ -11,7 +11,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 ## Features
 * 4WD or 2WD robotic car (depending on chasis)
 * It can operate under the control of a Wiimote or in autonomous mode
-* It can play wav files over the loudspeaker (it needs only an analogue audio amplifier)
+* It can play wav files over the loudspeaker (it needs only an analogue audio amplifier, as it uses the internal DAC)
 * The Wiimote can be used to:
   * Move forward (A button) or backward (B button)
   * Turn right (RIGHT button) or left (LEFT button)
