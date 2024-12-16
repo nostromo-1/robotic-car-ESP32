@@ -25,7 +25,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * It displays status messages in a display. It also shows its orientation (roll, pitch and yaw angles).
 * It features a KARR-type scanner :-)
 * It communicates via wifi, for example it reads current time and date from an NTP server. Initial wifi configuration is via WPS
-* It updates itself over the air when starting (firmware OTA update from github)
+* It updates itself over the air when starting (firmware [OTA update](OTA update.md) from github)
 
 ## Parts
 The following parts are needed to build it (see the schematics folder):
