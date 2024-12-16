@@ -25,7 +25,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * It displays status messages in a display. It also shows its orientation (roll, pitch and yaw angles).
 * It features a KARR-type scanner :-)
 * It communicates via wifi, for example it reads current time and date from an NTP server. Initial wifi configuration is via WPS
-* It updates itself over the air when starting (firmware [OTA update](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/OTA%20update.md) from github)
+* It updates itself over the air when starting (firmware [OTA update](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/OTA%20update.md) from github). This means that a fleet of robot cars will be updated automatically upon boot!
 
 ## Parts
 The following parts are needed to build it (see the schematics folder):
