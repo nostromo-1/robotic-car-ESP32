@@ -12,7 +12,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
 * 4WD or 2WD robotic car (depending on chasis)
 * It can operate under the control of a Wiimote or in autonomous mode
 * It can play wav files over the loudspeaker (it needs only an analogue audio amplifier, as it uses the internal DAC)
-* It features an Inertial Measurement Unit, which can be [calibrated](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/IMU%20calibration.md) at boot time
+* It features an Inertial Measurement Unit, which can be [calibrated](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/IMU%20calibration.md) at boot time. It contains an accelerometer and a gyroscope (read at 240 Hz) and a magnetometer (read at 40 Hz).
 * The Wiimote can be used to:
   * Move forward (A button) or backward (B button)
   * Turn right (RIGHT button) or left (LEFT button)
