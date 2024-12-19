@@ -29,5 +29,6 @@ This is an example of several samples taken from the accelerometer during calibr
 The histograms and statistical analysis of the shown samples can be seen here:
 ![](images/A_analysis.png)
 
-The conclusion from the above graphics and values is that the samples can be modelled as gaussian noise around its mean value. This mean value is the bias error stored in the `calibration.dat` file for processing during operation.
+The conclusion from the above graphics and values is that the samples can be modelled as gaussian noise around its mean value. This mean value is the bias error stored in the `calibration.dat` file for processing during operation. A similar conclusion is drawn when analysing the gyroscope samples.
+
 
