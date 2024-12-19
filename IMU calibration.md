@@ -1,6 +1,6 @@
 # IMU calibration
 
-The car contains an inertial measurement unit (IMU), which needs to be calibrated. When booting, if there is no calibration data it will stop execution.
+The car contains an inertial measurement unit (IMU), an LSM9DS1 9DoF MARG sensor (Magnetic, Angular Rate and Gravity), which needs to be calibrated. When booting, if there is no calibration data it will stop execution.
 Calibration data is stored in a file, in the spiffs filesystem located in its own [partition](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/partition%20tables.md).
 
 
