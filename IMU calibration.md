@@ -56,7 +56,7 @@ This is a complex task for a microcontroller with limited flash space, and a sim
 \displaylines{x' = A\times (x-u) \\\ y' = B\times (y-v) \\\ z' = C\times (z-w)}
 ```
 
-This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns: $`A, B, C, u, v, w`$. The displacement (or coordinates of the center of the ellipsopid) $`u, v, w`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.
+This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns: $`A, B, C, u, v, w`$. The displacement (or coordinates of the center of the ellipsoid) $`u, v, w`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.
 
 
 
