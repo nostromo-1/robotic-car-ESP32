@@ -25,10 +25,12 @@ These instruments are read continously during the calibration; each value is rea
 But instead of zero, some value will be read in each sample during calibration; this is the bias error, which will later (during operation) be substracted from the sampled values to obtain the real values. The calibration phase calculates these bias errors (one for each axis). The sampled values are not constant; instead, they are a random stochastic process, which can be modelled as gaussian noise around a certain value (its mean value).
 
 This is an example of several samples taken from the accelerometer during calibration:
-![](images/A_samples.png)
+
+<img src="images/A_samples.png" width="800">
 
 The histograms and statistical analysis of the shown samples can be seen here:
-![](images/A_analysis.png)
+
+<img src="images/A_analysis.png" width="500">
 
 The conclusion from the above graphics and values is that the samples follow a normal distribution (or very close to it), and thus can be modelled as gaussian noise around its mean value $`\mu`$. This mean value is the bias error stored in the `calibration.dat` file for processing during operation. A similar conclusion is drawn when analysing the gyroscope samples.
 
@@ -37,7 +39,16 @@ As can be seen in the pictures, the standard deviation $`\sigma`$ of the samples
 ## Magnetometer
 A magnetometer reads the strength and direction of the surrounding magnetic field, providing a value for each axis. The car uses it to calculate the earth's magnetic field, and combine this with the accelerometer values in order to estimate its attitude (roll, pitch and yaw angles). Therefore, any surrounding magnetic field and any ferromagnetic material around the sensor affects the measurement. These errors can be compensated for if they are constant with respect to the sensor, like for example the effects of the car motors.
 
-In absence of such perturbations, the magnetometer would read a magnetic field vector corresponding to the earth's magnetic field, which is different in each location (but is close to about 0.5 gauss or 50 uTeslas). You can check [here](https://www.magnetic-declination.com/) the strength and direction of the field in your location.
+In absence of such perturbations, the magnetometer would read a magnetic field vector corresponding to the earth's magnetic field, which is different in each location (but is close to about 0.5 gauss or 50 uTeslas). You can check [here](https://www.magnetic-declination.com/) or [here](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml) the strength and direction of the field in your location.
+
+The graphical representation of the magnetic field vector and its 3 components would be this:
+
+<img src="https://s3-us-west-2.amazonaws.com/courses-images/wp-content/uploads/sites/2952/2018/01/31183920/CNX_UPhysics_02_02_vector3D.jpg" width="200" height="200">
+
+If you rotate the car, and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere.
+
+<img src="images/sphere.png" width="150">
+
 
 
 
