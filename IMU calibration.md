@@ -44,10 +44,10 @@ In absence of such perturbations, the magnetometer would read a magnetic field v
 The graphical representation of the magnetic field vector and its 3 components would be this:
 <img align="center" src="https://s3-us-west-2.amazonaws.com/courses-images/wp-content/uploads/sites/2952/2018/01/31183920/CNX_UPhysics_02_02_vector3D.jpg" width="200" height="200">
 
-If you rotate the car, and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere, centered at the origin:
+If you rotate the car in all directions (i.e., over all 3 axis), and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere, centered at the origin:
 <img align="center" src="images/sphere.png" width="150">
 
-<img align="left" src="images/ellipsoid.jpg" width="350">
+<img align="left" src="images/ellipsoid.jpg" width="380">
 However, due to the influence of external magnetic fields in the car (from metal parts and magnets in the motors), the result will not be a sphere, but a displaced and stretched sphere, i.e., an ellipsoid not centered at the origin. Its 3 axis will be different (stretching) and the center will be displaced from the origin. The task of the calibration is to calculate the transformation needed to map each sample (taken during car operation) from the ellipsoid onto the sphere, thus correcting the distortions.
 
 
@@ -56,7 +56,7 @@ This is a complex task for a microcontroller with limited flash space, and a sim
 \displaylines{x' = A\times (x-V_x) \\\ y' = B\times (y-V_y) \\\ z' = C\times (z-V_z)}
 ```
 
-This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns: $`A, B, C, V_x, V_y, V_z`$. The displacement (or coordinates of the center of the ellipsoid) $`V_x, V_y, V_z`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.  The hardiron offset results from permanently magnetized ferromagnetic components in the car, while the softiron effect comes from the interfering magnetic field induced by the geomagnetic field onto normally unmagnetized ferromagnetic components. Please refer to [this document](https://www.nxp.com/docs/en/application-note/AN4247.pdf) for a more detailed explanation.
+This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns ($`A, B, C, V_x, V_y, V_z`$) from the samples obtained during calibration, which is the reason for the rotation of the car during this phase. The displacement (or coordinates of the center of the ellipsoid) $`V_x, V_y, V_z`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.  The hardiron offset results from permanently magnetized ferromagnetic components in the car, while the softiron effect comes from the interfering magnetic field induced by the geomagnetic field onto normally unmagnetized ferromagnetic components. Please refer to [this document](https://www.nxp.com/docs/en/application-note/AN4247.pdf) for a more detailed explanation.
 
 
 
