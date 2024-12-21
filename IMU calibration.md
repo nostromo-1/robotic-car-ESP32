@@ -19,7 +19,8 @@ After calibration is complete, it will store the results in 2 files:
 These files can be accessed over the built-in http server, if there is a wifi connection with DHCP server. Upon boot, the assigned IP address of the car will appear on the display. During car operation, type the following text in a browser connected to the same wifi network: `http://192.168.1.xx/spiffs/calibration.dat` or `http://192.168.1.xx/spiffs/deviation.dat`, using the IP address of your car.
 
 ## Accelerometer and gyroscope
-These instruments are read continously during the calibration; each value is read for all 3 axis (X, Y and Z). The accelerometer should read zero in all 3 axis except the vertical (Z), where it should read the gravitatory force (which is undistinguisable from an acceleration, this is the equivalence principle, basis of the theory of relativity). The calibration assumes that the car is near the Earth surface and not on a satellite, and thus it assumes a 1g gravitation acceleration. The gyroscope should read zero in all 3 axis.
+The accelerometer reads the acceleration in each axis (X, Y and Z), and the gyroscope reads the angular velocity (rotational speed) in each axis.
+These instruments are read continously during the calibration; each value is read for all 3 axis. The accelerometer should read zero in all 3 axis except the vertical (Z), where it should read the gravitatory force (which is undistinguisable from an acceleration, this is the equivalence principle, basis of the theory of relativity). The calibration assumes that the car is near the Earth surface and not on a satellite, and thus it assumes a 1g gravitation acceleration. The gyroscope should read zero in all 3 axis.
 
 But instead of zero, some value will be read in each sample during calibration; this is the bias error, which will later (during operation) be substracted from the sampled values to obtain the real values. The calibration phase calculates these bias errors (one for each axis). The sampled values are not constant; instead, they are a random stochastic process, which can be modelled as gaussian noise around a certain value (its mean value).
 
@@ -31,7 +32,14 @@ The histograms and statistical analysis of the shown samples can be seen here:
 
 The conclusion from the above graphics and values is that the samples follow a normal distribution (or very close to it), and thus can be modelled as gaussian noise around its mean value $`\mu`$. This mean value is the bias error stored in the `calibration.dat` file for processing during operation. A similar conclusion is drawn when analysing the gyroscope samples.
 
-As can be seen in the pictures, the standard deviation $`\sigma`$ of the samples is quite small, so that the values are centered around the mean value. The standard error of the mean, given the number of samples taken during calibration, is very small (0.1 or 0.2 in the above examples). Given this, the 95\% confidence interval of the calculated offset bias is rather small, and can be calculated as [1.96](https://en.wikipedia.org/wiki/97.5th_percentile_point) times the standard error, in each direction. So, in the above example, it would be $`44\pm0.22`$ for the X axis.
+As can be seen in the pictures, the standard deviation $`\sigma`$ of the samples is quite small, so that the values are centered around the mean value. The standard error of the mean, given the number of samples taken during calibration, is very small (0.1 or 0.2 in the above examples). Given this, the 95\% confidence interval of the calculated offset bias is rather small, and can be calculated as [1.96](https://en.wikipedia.org/wiki/97.5th_percentile_point) times the standard error, in each direction. So, in the above example, it would be $`44\pm0.22`$ for the X axis. This is a negligible error,so that the offset bias values are stored in integer format in the car.
+
+## Magnetometer
+A magnetometer reads the strength and direction of the surrounding magnetic field, providing a value for each axis. The car uses it to calculate the earth's magnetic field, and combine this with the accelerometer values in order to estimate its attitude (roll, pitch and yaw angles). Therefore, any surrounding magnetic field and any ferromagnetic material around the sensor affects the measurement. These errors can be compensated for if they are constant with respect to the sensor, like for example the effects of the car motors.
+
+In absence of such perturbations, the magnetometer would read a magnetic field vector corresponding to the earth's magnetic field, which is different in each location (but is close to about 0.5 gauss or 50 uTeslas). You can check [here](https://www.magnetic-declination.com/) the strength and direction of the field in your location.
+
+
 
 
 
