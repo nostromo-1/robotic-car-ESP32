@@ -42,12 +42,12 @@ A magnetometer reads the strength and direction of the surrounding magnetic fiel
 In absence of such perturbations, the magnetometer would read a magnetic field vector corresponding to the earth's magnetic field, which is different in each location (but is close to about 0.5 gauss or 50 uTeslas). You can check [here](https://www.magnetic-declination.com/) or [here](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml) the strength and direction of the field in your location.
 
 The graphical representation of the magnetic field vector and its 3 components would be this:
+<img align="center" src="https://s3-us-west-2.amazonaws.com/courses-images/wp-content/uploads/sites/2952/2018/01/31183920/CNX_UPhysics_02_02_vector3D.jpg" width="200" height="200">
 
-<img src="https://s3-us-west-2.amazonaws.com/courses-images/wp-content/uploads/sites/2952/2018/01/31183920/CNX_UPhysics_02_02_vector3D.jpg" width="200" height="200">
+If you rotate the car, and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere:
+<img align="center" src="images/sphere.png" width="150">
 
-If you rotate the car, and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere.
 
-<img src="images/sphere.png" width="150">
 
 
 
