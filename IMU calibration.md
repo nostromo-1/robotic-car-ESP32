@@ -51,19 +51,24 @@ If you rotate the car in all directions (i.e., over all 3 axis), and take sample
 <img align="left" src="images/ellipsoid.jpg" width="380">
 However, due to the influence of external magnetic fields in the car (from metal parts and magnets in the motors), the result will not be a sphere, but a displaced and stretched sphere, i.e., an ellipsoid not centered at the origin. Its 3 axis will be different (stretching) and the center will be displaced from the origin. The task of the calibration is to calculate the transformation needed to map each sample (taken during car operation) from the ellipsoid onto the sphere, thus correcting the distortions.
 
-This is a complex task for a microcontroller with limited flash space, and a simplified approach has been taken. This approach assumes that the axis of the ellipsoid are parallel to the coordinate axis, which is normally the case; this assumption greatly simplifies the calculations: it means that the rotation matrix is diagonal, with only 3 parameters. Its equation is then $`(\frac{x-V_x}{A})^2 + (\frac{y-V_y}{B})^2 + (\frac{z-V_z}{C})^2 = B_m^2`$, with $`Vx, Vy, Vz`$ being the center of the ellipsoid, and $`A, B, C`$ being the stretching factors.
+This is a complex task for a microcontroller with limited flash space, and a simplified approach has been taken. This approach assumes that the axis of the ellipsoid are parallel to the coordinate axis, which is normally the case; this assumption greatly simplifies the calculations: it means that the rotation matrix is diagonal, with only 3 parameters. Its equation is then $`A^2\cdot (x-V_x)^2 +  B^2\cdot (y-V_y)^2 + C^2\cdot (z-V_z)^2= B_m^2`$, with $`Vx, Vy, Vz`$ being the center of the ellipsoid, and $`A, B, C`$ being the stretching factors.
 
 So, during operation, for each sample value from the magnetometer, the following transformation would be applied: 
 ```math
-\displaylines{x' = A\times (x-V_x) \\\ y' = B\times (y-V_y) \\\ z' = C\times (z-V_z)}
+\displaylines{x' = A\cdot (x-V_x) \\\ y' = B\cdot (y-V_y) \\\ z' = C\cdot (z-V_z)}
 ```
 
 This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns ($`A, B, C, V_x, V_y, V_z`$) from the samples obtained during calibration, which is the reason for the rotation of the car during this phase. The displacement (or coordinates of the center of the ellipsoid) $`V_x, V_y, V_z`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.  The hardiron offset results from permanently magnetized ferromagnetic components in the car, while the softiron effect comes from the interfering magnetic field induced by the geomagnetic field onto normally unmagnetized ferromagnetic components. Please refer to [this document](https://www.nxp.com/docs/en/application-note/AN4247.pdf) for a more detailed explanation.
 
 ### Steps of calculation
-As a first step after the car rotation during calibration has finished, a first estimate of the unknowns is performed. The coordinates of the center of the ellipsoid $`V_x, V_y, V_z`$ are estimated, for each axis, by calculating the arithmetic mean between the maximum and the minimum value for that axis of all points: $`V_x = \frac{max(x) + min(x)}{2}`$. The stretching factors $`A, B, C`$ are estimated by calculating each semiaxis $`R_x = \frac{max(x) - min(x)}{2}`$, the average semiaxis $`R_{mean} = \frac{R_x+R_y+R_z}{3}`$ and then computing its relation to the average semiaxis: $`A = \frac{R_x}{R_{mean}}`$. These values could then be used as estimations of the unkinowns; however, they can be improved in a second step.
+As a first step after the car rotation during calibration has finished, a first estimate of the unknowns is performed. The coordinates of the center of the ellipsoid $`V_x, V_y, V_z`$ are estimated, for each axis, by calculating the arithmetic mean between the maximum and the minimum value for that axis of all points: $`V_x = \frac{max(x) + min(x)}{2}`$. The stretching factors $`A, B, C`$ are estimated by calculating each semiaxis $`R_x = \frac{max(x) - min(x)}{2}`$, the average semiaxis $`R_{mean} = \frac{R_x+R_y+R_z}{3}`$ and then computing its relation to the average semiaxis: $`A = \frac{R_x}{R_{mean}}`$. These values could then be used as estimations of the unknowns; however, they can be improved in a second step.
 
-The second step involves the error function, which calculates, for all samples obtained during calibration, the sum of the squared errors.
+The second step involves an error function, which calculates, for all samples obtained during calibration, the sum of the squared errors for the given values of the unknowns. For a perfect fit, this error would be zero. This error function is calculated as follows: $`err(Vx,Vy,Vz,A,B,C) = \sum_{i=1}^N \left( A^2\cdot \left(\frac{x_i-V_x}{B_m} \right)^2 +  B^2\cdot \left(\frac{y_i-V_y}{B_m} \right)^2 + C^2\cdot \left(\frac{z_i-V_z}{B_m} \right)^2 - 1 \right)^2`$
+
+The goal then is to find values of the unknowns, starting from the ones calculated in the first step, that minimize the error function. This is done using a gradient descent algorithm, which traverses the 6-dimensional space to find a local minimum. The value of the magnetic field $`B_m`$ is not relevant for attitude calculation; the implemented algorithm chooses a fixed value (in the source code) or, if the ellipsoid is almost a sphere, that radius of that sphere.
+
+After these two steps, the values of $`A, B, C, V_x, V_y, V_z`$ are stored in the calibration file.
+
 
 
 
