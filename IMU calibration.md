@@ -1,6 +1,6 @@
 # IMU calibration
 
-The car contains an inertial measurement unit (IMU), an LSM9DS1 9DoF MARG sensor (Magnetic, Angular Rate and Gravity), which needs to be calibrated. When booting, if there is no calibration data it will stop execution.
+The car contains an inertial measurement unit (IMU), an LSM9DS1 9DoF MARG sensor (Magnetic, Angular Rate and Gravity), which needs to be calibrated. When booting, if there is no calibration data, it will stop execution.
 Calibration data is stored in a file, in the spiffs filesystem located in its own [partition](https://github.com/nostromo-1/robotic-car-ESP32/blob/master/partition%20tables.md).
 
 
@@ -20,7 +20,7 @@ These files can be accessed over the built-in http server, if there is a wifi co
 
 ## Accelerometer and gyroscope
 The accelerometer reads the acceleration in each axis (X, Y and Z), and the gyroscope reads the angular velocity (rotational speed) in each axis.
-These instruments are read continously during the calibration; each value is read for all 3 axis. The accelerometer should read zero in all 3 axis except the vertical (Z), where it should read the gravitatory force (which is undistinguisable from an acceleration, this is the equivalence principle, basis of the theory of relativity). The calibration assumes that the car is near the Earth surface and not on a satellite, and thus it assumes a 1g gravitation acceleration. The gyroscope should read zero in all 3 axis.
+These instruments are read continously during the calibration; each instrument is read for all 3 axis. The accelerometer should read zero in all 3 axis except the vertical (Z), where it should read the gravitatory force (which is undistinguisable from an acceleration, this is the equivalence principle, basis of the theory of relativity). The calibration assumes that the car is near the Earth surface and not on a satellite, and thus it assumes a 1g gravitation acceleration. The gyroscope should read zero in all 3 axis.
 
 But instead of zero, some value will be read in each sample during calibration; this is the bias error, which will later (during operation) be substracted from the sampled values to obtain the real values. The calibration phase calculates these bias errors (one for each axis). The sampled values are not constant; instead, they are a random stochastic process, which can be modelled as gaussian noise around a certain value (its mean value).
 
@@ -34,30 +34,36 @@ The histograms and statistical analysis of the shown samples can be seen here:
 
 The conclusion from the above graphics and values is that the samples follow a normal distribution (or very close to it), and thus can be modelled as gaussian noise around its mean value $`\mu`$. This mean value is the bias error stored in the `calibration.dat` file for processing during operation. A similar conclusion is drawn when analysing the gyroscope samples.
 
-As can be seen in the pictures, the standard deviation $`\sigma`$ of the samples is quite small, so that the values are centered around the mean value. The standard error of the mean, given the number of samples taken during calibration, is very small (0.1 or 0.2 in the above examples). Given this, the 95\% confidence interval of the calculated offset bias is rather small, and can be calculated as [1.96](https://en.wikipedia.org/wiki/97.5th_percentile_point) times the standard error, in each direction. So, in the above example, it would be $`44\pm0.22`$ for the X axis. This is a negligible error,so that the offset bias values are stored in integer format in the car.
+As can be seen in the pictures, the standard deviation $`\sigma`$ of the samples is quite small, so that the values are centered around the mean value. The standard error of the mean, given the number of samples taken during calibration, is very small (0.1 or 0.2 in the above examples). Given this, the 95\% confidence interval of the calculated offset bias is rather small, and can be calculated as [1.96](https://en.wikipedia.org/wiki/97.5th_percentile_point) times the standard error, in each direction. So, in the above example, it would be $`44\pm0.22`$ for the X axis, which is a negligible error. The offset bias values are stored in integer format in the car.
 
 ## Magnetometer
-A magnetometer reads the strength and direction of the surrounding magnetic field, providing a value for each axis. The car uses it to calculate the earth's magnetic field, and combine this with the accelerometer values in order to estimate its attitude (roll, pitch and yaw angles). Therefore, any surrounding magnetic field and any ferromagnetic material around the sensor affects the measurement. These errors can be compensated for if they are constant with respect to the sensor, like for example the effects of the car motors.
+A magnetometer reads the strength and direction of the surrounding magnetic field (a vector), providing a value for each axis. The car uses it to calculate the earth's magnetic field, and combine this with the gravity measured by the accelerometer in order to estimate its attitude (roll, pitch and yaw angles). Therefore, any surrounding magnetic field and any ferromagnetic material around the sensor affects the measurement. These errors can be compensated for if they are constant with respect to the sensor, like for example the effects of the car motors.
 
 In absence of such perturbations, the magnetometer would read a magnetic field vector corresponding to the earth's magnetic field, which is different in each location (but is close to about 0.5 gauss or 50 uTeslas). You can check [here](https://www.magnetic-declination.com/) or [here](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml) the strength and direction of the field in your location.
 
 The graphical representation of the magnetic field vector and its 3 components would be this:
 <img align="center" src="https://s3-us-west-2.amazonaws.com/courses-images/wp-content/uploads/sites/2952/2018/01/31183920/CNX_UPhysics_02_02_vector3D.jpg" width="200" height="200">
 
-If you rotate the car in all directions (i.e., over all 3 axis), and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere, centered at the origin:
+If you rotate the car in all directions (i.e., over all 3 axis), and take samples repeteadly marking the 3D space point where the magnetic vector is, as the strength of the magnetic field does not change, you would end up with points on the surface of a sphere, centered at the origin, and its radius would be the strength of the magnetic field $`B_m`$ (modulus of the vector). Its equation would be $`x^2+y^2+z^2 = B_m^2`$.
+
 <img align="center" src="images/sphere.png" width="150">
 
 <img align="left" src="images/ellipsoid.jpg" width="380">
 However, due to the influence of external magnetic fields in the car (from metal parts and magnets in the motors), the result will not be a sphere, but a displaced and stretched sphere, i.e., an ellipsoid not centered at the origin. Its 3 axis will be different (stretching) and the center will be displaced from the origin. The task of the calibration is to calculate the transformation needed to map each sample (taken during car operation) from the ellipsoid onto the sphere, thus correcting the distortions.
 
+This is a complex task for a microcontroller with limited flash space, and a simplified approach has been taken. This approach assumes that the axis of the ellipsoid are parallel to the coordinate axis, which is normally the case; this assumption greatly simplifies the calculations: it means that the rotation matrix is diagonal, with only 3 parameters. Its equation is then $`(\frac{x-V_x}{A})^2 + (\frac{y-V_y}{B})^2 + (\frac{z-V_z}{C})^2 = B_m^2`$, with $`Vx, Vy, Vz`$ being the center of the ellipsoid, and $`A, B, C`$ being the stretching factors.
 
-This is a complex task for a microcontroller with limited flash space, and a simplified approach has been taken. This approach assumes that the axis of the ellipsoid are parallel to the coordinate axis, which is normally the case; this assumption greatly simplifies the calculations: it means that the rotation matrix is diagonal, with only 3 parameters. So, for each sample value from the magnetometer, the following transformation would be applied: 
+So, during operation, for each sample value from the magnetometer, the following transformation would be applied: 
 ```math
 \displaylines{x' = A\times (x-V_x) \\\ y' = B\times (y-V_y) \\\ z' = C\times (z-V_z)}
 ```
 
 This means that we move the center of the ellipsoid and we multiply by a factor, in order to recreate the sphere. The task of the calibration is to calculate the unknowns ($`A, B, C, V_x, V_y, V_z`$) from the samples obtained during calibration, which is the reason for the rotation of the car during this phase. The displacement (or coordinates of the center of the ellipsoid) $`V_x, V_y, V_z`$ are the **hardiron** error, while the stretching factors $`A, B, C`$ are the **softiron** error.  The hardiron offset results from permanently magnetized ferromagnetic components in the car, while the softiron effect comes from the interfering magnetic field induced by the geomagnetic field onto normally unmagnetized ferromagnetic components. Please refer to [this document](https://www.nxp.com/docs/en/application-note/AN4247.pdf) for a more detailed explanation.
 
+### Steps of calculation
+As a first step after the car rotation during calibration has finished, a first estimate of the unknowns is performed. The coordinates of the center of the ellipsoid $`V_x, V_y, V_z`$ are estimated, for each axis, by calculating the arithmetic mean between the maximum and the minimum value for that axis of all points: $`V_x = \frac{max(x) + min(x)}{2}`$. The stretching factors $`A, B, C`$ are estimated by calculating each semiaxis $`R_x = \frac{max(x) - min(x)}{2}`$, the average semiaxis $`R_{mean} = \frac{R_x+R_y+R_z}{3}`$ and then computing its relation to the average semiaxis: $`A = \frac{R_x}{R_{mean}}`$. These values could then be used as estimations of the unkinowns; however, they can be improved in a second step.
+
+The second step involves the error function, which calculates, for all samples obtained during calibration, the sum of the squared errors.
 
 
 
