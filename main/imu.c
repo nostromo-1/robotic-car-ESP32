@@ -71,6 +71,14 @@ typedef struct {
 } SampleList_t;
 
 
+// struct used for FIR filters
+typedef struct {
+  float *history;
+  const float *taps;
+  unsigned int last_index, taps_num;
+} Filter_t;
+
+
 static const char* TAG = __FILE__;
 static uint8_t accelAddr, magAddr;  // I2C addresses
 
@@ -96,6 +104,7 @@ static const float odr_m_modes[] = {0.625,1.25,2.5,5.0,10.0,20.0,40.0,80.0};  //
 static const float delta_t = 1.0/odr_ag_modes[ODR_AG];  // Inverse of gyro/accel ODR
 static int upsampling_factor;  // Ratio between both ODRs
 
+static Filter_t filter_mx, filter_my, filter_mz;   /* Interpolating filters for magnetometer */
 
 // gRes, aRes, and mRes store the current resolution for each sensor. 
 // Units of these values would be DPS (or g's or Gs's) per ADC tick.
@@ -152,29 +161,113 @@ static float ellipsoid_fit(const SampleList_t *const sample_list, float Bm);
 static float quad_error_function(float Vx, float Vy, float Vz, float A, float B, float C, 
                                  float Bm, const SampleList_t *sample_list);
                                  
-                
-/** IMU functions **/
-                                   
-/*
-Function to calculate heading, using magnetometer readings.
-It only works if the sensor is lying flat (z-axis normal to Earth).
-It is a non tilt-compensated compass.
-*/
-static void printHeading(float mx, float my)
+
+                                 
+/************************ Filter functions ***********************/
+
+/**
+Digital FIR filter. This LPF is used for filterig magnetometer data.
+It is used to interpolate after upsampling from ODR_M to ODR_AG.
+It is designed to work with these combinations (upsampling x3 or x6):
+ODR_M=80, ODR_AG=476; ODR_M=80, ODR_AG=238;
+ODR_M=40, ODR_AG=238; ODR_M=40, ODR_AG=119; 
+ODR_M=20, ODR_AG=119; ODR_M=20, ODR_AG=59.5; 
+ODR_M=10, ODR_AG=59.5; 
+
+FIR filter designed with
+ http://t-filter.appspot.com
+
+sampling frequency: 240 Hz
+
+* 0 Hz - 4 Hz
+  gain = 1
+  desired ripple = 2 dB
+  actual ripple = 1.0141307953166252 dB
+
+* 5 Hz - 19 Hz
+  gain = 1
+  desired ripple = 35 dB
+  actual ripple = 33.758521533154735 dB
+
+* 20 Hz - 120 Hz
+  gain = 0
+  desired attenuation = -40 dB
+  actual attenuation = -43.613766226277974 dB
+**/
+
+static const float LP_20_240_filter_taps[] = {
+  0.0017433948030936106,
+  0.009143190985861756,
+  0.012133516280499421,
+  0.01983655704542007,
+  0.02830242809740451,
+  0.03812682806131509,
+  0.048540195172121076,
+  0.05892094411702151,
+  0.06848428950018577,
+  0.07647321877548367,
+  0.08222112771837956,
+  0.08523022650867189,
+  0.08523022650867189,
+  0.08222112771837956,
+  0.07647321877548367,
+  0.06848428950018577,
+  0.05892094411702151,
+  0.048540195172121076,
+  0.03812682806131509,
+  0.02830242809740451,
+  0.01983655704542007,
+  0.012133516280499421,
+  0.009143190985861756,
+  0.0017433948030936106
+};
+
+
+static esp_err_t LPFilter_init(Filter_t *filter, const float *tap_array, unsigned tap_list_size) 
 {
-float heading;
-char str[OLED_MAX_LINE_SIZE];
-  
-   heading = -180/M_PI*atan2(my, mx);  // positive westwards
-   //printf("Heading: %3.0f\n", heading);
-   snprintf(str, sizeof(str), "Head:%-3.0f", heading);  
-   oledWriteString(0, 5, str, false);  
+   if (filter == NULL) ERR(-1, "Invalid filter descriptor");
+   if (tap_array == NULL || tap_list_size == 0) ERR(ESP_FAIL, "Invalid tap array for filter");
+   filter->last_index = 0;
+   filter->taps_num = tap_list_size;
+   filter->taps = tap_array;
+   filter->history = calloc(tap_list_size, sizeof(float));
+   if (filter->history == NULL) ERR(ESP_FAIL, "Cannot allocate memory: %s", strerror(errno));
+   return ESP_OK;
 }
 
 
+static void LPFilter_close(Filter_t *filter) 
+{
+   if (filter->history) free(filter->history);
+}
+
+
+static void LPFilter_put(Filter_t *filter, float input) 
+{
+  filter->history[filter->last_index++] = input;
+  if (filter->last_index == filter->taps_num) filter->last_index = 0;
+}
+
+
+static float LPFilter_get(const Filter_t *filter) 
+{
+  float acc = 0;
+  unsigned index = filter->last_index;
+  
+  for (unsigned i = 0; i < filter->taps_num; i++) {
+    index = (index != 0) ? index-1 : filter->taps_num-1;
+    acc += filter->history[index] * filter->taps[i];
+  }
+  return acc;
+}
+                                
+                                               
+                                 
+/** IMU functions **/
+                                   
 
 /* 
-This function calculates the LSM9DS1's orientation based on the
+This function calculates the car's attitude based on the
 accelerometer and magnetometer data: its roll, pitch and yaw angles, in aerospace convention.
 It represents a 3D tilt-compensated compass.
 It also calculates the tilt: angle that the normal of the car forms with the vertical.
@@ -728,7 +821,7 @@ The ellipsoid equation is A^2*(Bx-Vx)^2+B^2*(By-Vy)^2+C^2*(Bz-Vz)^2 - Bm^2 = 0, 
 error of each sample measures how far from zero is each sample in that equation.
 */
 static float quad_error_function(float Vx, float Vy, float Vz, float A2, float B2, float C2, 
-                            float Bm, const SampleList_t *const sample_list)
+                                 float Bm, const SampleList_t *const sample_list)
 {
 float quad_err_total = 0.0;
    
@@ -900,6 +993,29 @@ uint8_t byte;
    
    /************************* Final actions ***********************/
    
+   // Initialize low pass filter for interpolating magnetometer data
+   rc = LPFilter_init(&filter_mx, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
+   if (rc != ESP_OK) goto init_error;  
+   LPFilter_init(&filter_my, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
+   if (rc != ESP_OK) goto init_error;    
+   LPFilter_init(&filter_mz, LP_20_240_filter_taps, sizeof(LP_20_240_filter_taps)/sizeof(LP_20_240_filter_taps[0]));
+   if (rc != ESP_OK) goto init_error; 
+   
+   /*
+   // Initialize low pass filter for accelerometer data
+   rc = LPFilter_init(&filter_ax, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
+   if (rc < 0) goto init_error;  
+   LPFilter_init(&filter_ay, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
+   if (rc < 0) goto init_error;    
+   LPFilter_init(&filter_az, LP_10_240_filter_taps, sizeof(LP_10_240_filter_taps)/sizeof(float));
+   if (rc < 0) goto init_error; 
+   LPFilter_setDCgain(&filter_ax, 1.0);  // No need for filter_ay and filter_az, as they share the LP_10_240_filter_taps  
+
+   // Initialize high pass filter for 1st order derivation
+   rc = LPFilter_init(&filter_d1_ax, HP_1st_deriv_filter_taps, sizeof(HP_1st_deriv_filter_taps)/sizeof(float));
+   if (rc < 0) goto init_error;    
+   */   
+   
    // Start the IMU reading timer, calling IMU_read every delay_ms
    uint32_t delay_ms = lroundf(1000.0/odr_m_modes[ODR_M]*1.2);  // Read IMU with a period of magnetometer ODR, add margin
    esp_timer_handle_t timer;
@@ -915,9 +1031,12 @@ uint8_t byte;
    ESP_LOGI(TAG, "IMU is read every %lu ms", delay_ms);
    return 0;
    
-   /* error handling if read operation from I2C bus failed */
+   /* error handling */
 rw_error:
    ERR(-1, "Cannot read/write data from IMU");
+
+init_error:
+   ERR(-1, "Error initializing the IMU");
 }
 
 
@@ -950,6 +1069,59 @@ esp_err_t rc;
 
 
 
+/* 
+   Interpolate samples (mxr, myr, mzr) by a factor of interpolation_factor
+   This performs upsampling of the magnetometer samples to get the ODR of the accelerometer/gyro (ie, by a factor of N). 
+   First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
+   eliminate the spectral replica of the original signal. This interpolates the values.
+   The output is given as an static array of floats with the order X, Y, Z
+*/
+float* interpolation_filter_magnetic_samples(int interpolation_factor, float mxr, float myr, float mzr)
+{
+static float mr[3];   // Output values of filter (mx, my, mz)
+static float mx_x[3], mx_y[3], my_x[3], my_y[3], mz_x[3], mz_y[3];  // input and output values of biquad filter
+static const float a[] = {0.00143871, 0.00287743, 0.00143871};  // feedforward coefficients of biquad filter
+static const float b[] = {1.0,  -1.86108974, 0.86684460};  // feedback coefficients of biquad filter
+static unsigned int count;
+
+      /*
+      // The low pass filter is implemented as a FIR filter, cut frequency 20 Hz, -43 dB at 20 Hz
+      if (count++%interpolation_factor == 0) {  // After the 0-valued samples, feed the magnetometer value we just read
+         LPFilter_put(&filter_mx, mxr); LPFilter_put(&filter_my, myr); LPFilter_put(&filter_mz, mzr);
+      }
+      else {  // Introduce 0-valued samples to align both ODR
+         LPFilter_put(&filter_mx, 0); LPFilter_put(&filter_my, 0); LPFilter_put(&filter_mz, 0);         
+      }
+      // Take output of the interpolation filter
+      // Multiply by interpolation_factor, to compensate for DC gain reduction due to interpolation
+      mr[0] = LPFilter_get(&filter_mx)*interpolation_factor; mr[1] = LPFilter_get(&filter_my)*interpolation_factor; mr[1] = LPFilter_get(&filter_mz)*interpolation_factor;      
+      */
+      
+      // The low pass filter is implemented as a biquad IIR filter, cut frequency 3 Hz, Q 0.55 (to avoid overshoot in response to unit step), -33 dB at 20 Hz
+      // Designed with https://arachnoid.com/BiQuadDesigner/index.html
+      // Shift input and output values one position
+      mx_x[2] = mx_x[1]; mx_x[1] = mx_x[0]; mx_y[2] = mx_y[1]; mx_y[1] = mx_y[0];
+      my_x[2] = my_x[1]; my_x[1] = my_x[0]; my_y[2] = my_y[1]; my_y[1] = my_y[0];
+      mz_x[2] = mz_x[1]; mz_x[1] = mz_x[0]; mz_y[2] = mz_y[1]; mz_y[1] = mz_y[0];
+      
+      if (count++%interpolation_factor == 0) {  // After the 0-valued samples, feed the magnetometer value we just read
+         mx_x[0] = mxr; my_x[0] = myr; mz_x[0] = mzr;
+      }
+      else {  // Introduce 0-valued samples to align both ODR
+         mx_x[0] = 0; my_x[0] = 0; mz_x[0] = 0;  
+      }
+      // Apply filter
+      mx_y[0] = a[0]*mx_x[0] + a[1]*mx_x[1] + a[2]*mx_x[2] - b[1]*mx_y[1] - b[2]*mx_y[2];
+      my_y[0] = a[0]*my_x[0] + a[1]*my_x[1] + a[2]*my_x[2] - b[1]*my_y[1] - b[2]*my_y[2];
+      mz_y[0] = a[0]*mz_x[0] + a[1]*mz_x[1] + a[2]*mz_x[2] - b[1]*mz_y[1] - b[2]*mz_y[2];
+      // Multiply by interpolation_factor, to compensate for DC gain reduction due to interpolation
+      mr[0] = interpolation_factor * mx_y[0]; mr[1] = interpolation_factor * my_y[0]; mr[2] = interpolation_factor * mz_y[0];    
+      
+      return mr;
+}
+
+
+
 /***
 This function is called periodically, with the rate of the magnetometer ODR.
 It reads the IMU data and feeds the Magdwick fusion filter or the 3D tilt compensated compass algorithm. 
@@ -970,14 +1142,13 @@ int rc;
 uint8_t samples, byte;
 static uint8_t buf[FIFO_LINE_SIZE*32];  // static, so it does not grow the stack; 32 is FIFO size
 char str[OLED_MAX_LINE_SIZE];
-static unsigned int samples_count, count, collision_sample;
+static unsigned int samples_count;
 //static bool in_collision;
 
 /* Real (scaled and compensated) readings of the sensors */
 float axr, ayr, azr;
 float gxr, gyr, gzr;
 float mxr, myr, mzr;
-static float o_mxr, o_myr, o_mzr; // Previous values
 //float axrf, ayrf, azrf; // values after LPF
 //float daxr;
    
@@ -985,9 +1156,9 @@ static float o_mxr, o_myr, o_mzr; // Previous values
    int16_t mx, my, mz; // x, y, and z axis raw readings of the magnetometer
    rc = read_magnetometer(&mx, &my, &mz);  // Takes ca. 0.5 ms
    if (rc < 0) goto rw_error;
-   if (rc == 0) {
+   if (rc == 0) {  // No magnetometer data yet
       ESP_LOGW(TAG, "No magnetometer data");
-      return;  // No magnetometer data yet
+      return;  
    }
    /* Substract measured error values (hardiron effects) */
    mx -= err_MA[0]; my -= err_MA[1]; mz -= err_MA[2];      
@@ -1017,13 +1188,14 @@ static float o_mxr, o_myr, o_mzr; // Previous values
       rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms for 7 samples
       if (rc < 0) goto rw_error;         
    }
+
    // Process samples
    for (int n=0; n<samples; n++) {
       /* These values are the raw signed 16-bit readings from the sensors */
       int16_t gx, gy, gz; // x, y, and z axis raw readings of the gyroscope
       int16_t ax, ay, az; // x, y, and z axis raw readings of the accelerometer      
-      uint8_t *p = buf + FIFO_LINE_SIZE*n;  
-      
+      uint8_t *p = buf + FIFO_LINE_SIZE*n;
+           
       /* Store accel and gyro data. X and Y axis are exchanged, so that reference system is
       right handed, X axis points forwards, Y to the left, and filter algorithms work correctly */
       gy = p[1]<<8 | p[0]; gx = p[3]<<8 | p[2]; gz = p[5]<<8 | p[4];
@@ -1035,33 +1207,19 @@ static float o_mxr, o_myr, o_mzr; // Previous values
 
       /* Store real values in floating point variables, apply scaling */
       axr = ax*aRes; ayr = ay*aRes; azr = az*aRes;      
-      gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;  
+      gxr = gx*gRes; gyr = gy*gRes; gzr = gz*gRes;
 
-      /* Perform upsampling of magnetometer samples to the ODR of the accelerometer/gyro (ie, by a factor of N). 
-      First, introduce N-1 0-valued samples to align both ODR. Then, filter with a low pass filter to
-      eliminate the spectral replica of the original signal. This interpolates the values.
-      The low pass filter is implemented as a single pole IIR filter: y(n) = a*x(n) + (1-a)*y(n-1), 0 < a < 1 */
-      const float alpha = 0.02;  // Rapid decay response, with 16 dB (5 Hz), 22 dB (10 Hz), 28 dB (20 Hz), 34 dB (40 Hz), 39 dB (fsample/2, 120 Hz)
-      //const float alpha = 0.01;  // Rapid decay response, with 22 dB (5 Hz), 28 dB (10 Hz), 34 dB (20 Hz), 40 dB (40 Hz), 46 dB (fsample/2, 120 Hz)
-      // Calculate new mxr myr, mzr values by filtering the existing values
-      if (samples_count++%upsampling_factor == 0) {  // Introduce measured value as input in filter every N (upsampling_factor) samples
-         mxr = alpha*mxr + (1-alpha)*o_mxr; myr = alpha*myr + (1-alpha)*o_myr; mzr = alpha*mzr + (1-alpha)*o_mzr;
-      }
-      else { // Insert zeros as input in filter (mxr=0, etc) every N-1 samples
-         mxr = (1-alpha)*o_mxr; myr = (1-alpha)*o_myr; mzr = (1-alpha)*o_mzr;  
-      }
-      o_mxr = mxr; o_myr = myr; o_mzr = mzr;  // Remember these output values for next sample
+      // Interpolate magnetic samples to get same ODR as accel/gyro
+      float* mr = interpolation_filter_magnetic_samples(upsampling_factor, mxr, myr, mzr);
       
-      mxr *= upsampling_factor; myr *= upsampling_factor; mzr *= upsampling_factor;  // Compensate for DC gain loss after interpolating filter
       //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxr*mxr+myr*myr+mzr*mzr));
-      
-      
+            
       /***** IMU data is available. Now perform whatever operations are needed with the obtained values *****/
       
-      getOrientation(axr, ayr, azr, mxr, myr, mzr);  // Sets global variables roll, pitch, yaw, tilt;
+      getOrientation(axr, ayr, azr, mr[0], mr[1], mr[2]);  // Sets global variables roll, pitch, yaw, tilt;
       //printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);  
-      if (!(count++%10)) {
+      if ((samples_count++&0xF) == 0) {
          snprintf(str, sizeof(str), "Yaw: %3.0f ", yaw);  
          oledWriteString(0, 6, str, false);    
       }
