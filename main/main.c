@@ -176,7 +176,7 @@ typedef struct {
 
 
 /** These are the shared memory variables used for thread intercommunication **/
-_Atomic uint32_t distance = UINT32_MAX;
+_Atomic int32_t distance = INT32_MAX;
 _Atomic int8_t velocidadCoche = INITIAL_SPEED;  // velocidad objetivo del coche. Entre 0 y 100; el sentido de la marcha viene dado por el botón pulsado (A/B)
 _Atomic bool esquivando; // Car is avoiding obstacle
 _Atomic bool stalled;    // Car is stalled: it does not change its distance to objects
@@ -235,7 +235,7 @@ Bocina_t bocina = {
 ultrasonic_sensor_t sonarHCSR04 = {
     .trigger_pin = SONAR_TRIGGER_PIN,
     .echo_pin = SONAR_ECHO_PIN,
-    .distance = UINT32_MAX
+    //.distance = UINT32_MAX
 };
     
 
@@ -612,7 +612,7 @@ uint32_t voltage, current, battery1;
    oledBigMessage(0, NULL);
    while (gpio_get_level(mando.scan_pin) == 0) vTaskDelay(pdMS_TO_TICKS(100));   // Wait till user releases button
    rc = setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate);  // Setup IMU sensor
-   if (rc == -2) {
+   if (rc == -2) {  // Not calibration data, and user did not press button
       oledBigMessage(0, "PLEASE");
       oledBigMessage(1, "CALIB ME");
       pito(10, 1);    // Buzz for 10 tenths of a second, wait till done
@@ -671,7 +671,7 @@ esp_err_t ret;
        esp_system_abort(NULL);
        return;
    } else {
-       ESP_LOGI(TAG, "Size of partition '%s': total: %d, used: %d", conf.partition_label, total, used);
+       ESP_LOGI(TAG, "Size of partition '%s': total %d, used %d", conf.partition_label, total, used);
    }
    
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -698,7 +698,7 @@ esp_err_t ret;
 void app_main(void)
 {
    fw_description = esp_app_get_description();
-   printf("FW of %s, version %s\n", fw_description->project_name, fw_description->version);
+   printf("%s, version %s\n", fw_description->project_name, fw_description->version);
    printf("Hello world from CPU %d\n", xPortGetCoreID());
    printf("RTOS version %s\n", tskKERNEL_VERSION_NUMBER);
    printf("Max prio value=%u\n", configMAX_PRIORITIES-1);
@@ -797,57 +797,52 @@ int64_t tick, reference_tick;
 uint32_t stalledTime;
 const uint32_t maxStalledTime = 1200*1e3;  // Time in microseconds to flag car as stopped (it does not change its distance)
 
-int32_t distance_local, previous_distance, reference_distance;  // Must be signed value
+int32_t previous_distance, reference_distance;  // Must be signed value
 static const char displayText[] = "Dist (cm):";
-bool is_stalled;
 bool firstTime = true;
 const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
 
     TickType_t xWakeTime = xTaskGetTickCount();
     for (;;) {
-        uint32_t dist;
+        uint32_t measured_distance;
         
         xTaskDelayUntil(&xWakeTime, pdMS_TO_TICKS(xDelay));
         tick = esp_timer_get_time();
-        if (ultrasonic_measure_cm(&sonarHCSR04, &dist) != ESP_OK) continue;
+        if (ultrasonic_measure_cm(&sonarHCSR04, &measured_distance) != ESP_OK) continue;
         
         if (firstTime) {
             firstTime = false;
             reference_tick = tick;  // Reference for stalled time calculation
-            reference_distance = dist;
-            previous_distance = dist;
+            reference_distance = measured_distance;
+            previous_distance = measured_distance;
             oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
             continue;
         }
         
-        // Apply a lowpass filter (IIR filter, complementary filter)
-        distance_local = sonarHCSR04.distance = (alpha*dist + (100-alpha)*previous_distance)/100;
-        
         /* Set global variable "distance", this is the only producer */
-        WRITE_ATOMIC(distance, sonarHCSR04.distance);
+        WRITE_ATOMIC(distance, (alpha*measured_distance + (100-alpha)*previous_distance)/100);  // Apply a lowpass filter (IIR filter, complementary filter)
         
         /* Update display if distance changed since last reading */
-        if (distance_local != previous_distance) {
+        if (distance != previous_distance) {
             char str[9];
-            snprintf(str, sizeof(str), "%-3lu", distance_local);
-            oledWriteString(8*sizeof(displayText), 0, str, false);  // update only distance number
-            previous_distance = distance_local;
+            snprintf(str, sizeof(str), "%-3lu", distance);
+            oledWriteString(8*sizeof(displayText), 0, str, false);  // update only distance number, to shorten the time
+            previous_distance = distance;
         }
         
         /* If car should be moving, look at change in distance to object since reference was taken; 
            if distance change is small, compute time passed as stalled, otherwise, reset values */
-        if ((m_izdo.velocidad || m_dcho.velocidad) && abs(reference_distance - distance_local)<=2) {
+        if ((m_izdo.velocidad || m_dcho.velocidad) && abs(reference_distance - distance)<=2) {
            stalledTime = tick - reference_tick;
         }
         else {
             stalledTime = 0;
             reference_tick = tick;
-            reference_distance = distance_local;
+            reference_distance = distance;
         }
         
         /* If the stalled time is above threshold, set global variable "stalled" as true, otherwise as false */
-        is_stalled = stalledTime >= maxStalledTime;
-        WRITE_ATOMIC(stalled, is_stalled); 
+        WRITE_ATOMIC(stalled, stalledTime >= maxStalledTime); // this is the only producer
         
         /* 
            Activate semaphore to indicate main loop that it must awake;
@@ -857,7 +852,7 @@ const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
            or the car has crashed into something
         */
         if (!remoteOnly && !READ_ATOMIC(scanningWiimote) && !READ_ATOMIC(esquivando)) {
-            if (distance_local < DISTMIN || is_stalled || READ_ATOMIC(collision)) {
+            if (distance < DISTMIN || stalled || READ_ATOMIC(collision)) {
                WRITE_ATOMIC(esquivando, true);  // Set global variable
                xTaskNotifyGive(xMainTask);      // Awake main loop
             }
