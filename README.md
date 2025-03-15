@@ -19,7 +19,7 @@ Communication with the robot is achieved via bluetooth (the wiimote).
   * Increase ('+' button) or decrease speed ('-' button). Speed is signalled in the leds of the Wiimote
   * Activate a buzzer sound (DOWN button)
   * Play a police siren (UP button) over a loudspeaker. If you push again the UP button while still playing, it stops playing
-* It can detect collisions via the inertial measurement unit. If it crashes, it tries to avoid the obstacle. NOT YET IMPLEMENTED
+* It can detect collisions via the inertial measurement unit. If it crashes, it tries to avoid the obstacle
 * It continuously monitors distance to an obstacle in the front side. If an obstacle is near, it will drive around it by turning until no obstacle is found. If it detects a stall (like in undetected obstacles, due to a non straight position with respect to the sonar), it will move a little backwards and turn to avoid it
 * It monitors battery voltage and current consumption and shows them in the display, also showing a battery status symbol in the display. If battery is too low, it powers off
 * If the scan button is pressed, it starts scanning for wiimotes and connects to one.
