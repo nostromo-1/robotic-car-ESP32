@@ -757,19 +757,16 @@ void app_main(void)
       );
       
       buttons = READ_ATOMIC(mando.buttons);
-      //if (mando.wiimote && ~buttons&BUTTON_A) continue;  // Take action only if A is pressed
       if (mando.wiimote && ~buttons&BUTTON_A) {
          ajustaCocheConMando(buttons);
          continue;
       }
-      
+      // Take action only if A is pressed
       if (READ_ATOMIC(collision) || READ_ATOMIC(stalled)) {
-         //printf("Collision/stall!\n");
          oledBigMessage(0, "STALLED"); 
          retreatBackwards(); 
       }
       else {
-         //printf("Esquivando...\n");
          oledBigMessage(0, "OBSTACLE"); 
          avoidObstacle();  // Distance is below threshold  
       } 
@@ -797,14 +794,14 @@ int64_t tick, reference_tick;
 uint32_t stalledTime;
 const uint32_t maxStalledTime = 1200*1e3;  // Time in microseconds to flag car as stopped (it does not change its distance)
 
-int32_t previous_distance, reference_distance;  // Must be signed value
+int32_t distance_mm, previous_distance, reference_distance;  // Must be signed values. All in mm, to avoid rounding errors in filter integer operations
 static const char displayText[] = "Dist (cm):";
 bool firstTime = true;
 const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
 
     TickType_t xWakeTime = xTaskGetTickCount();
     for (;;) {
-        uint32_t measured_distance;
+        uint32_t measured_distance;  // In cm
         
         xTaskDelayUntil(&xWakeTime, pdMS_TO_TICKS(xDelay));
         tick = esp_timer_get_time();
@@ -813,32 +810,33 @@ const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
         if (firstTime) {
             firstTime = false;
             reference_tick = tick;  // Reference for stalled time calculation
-            reference_distance = measured_distance;
-            previous_distance = measured_distance;
+            reference_distance = 10*measured_distance;
+            previous_distance = reference_distance;
             oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
             continue;
         }
         
+        distance_mm = (alpha*10*measured_distance + (100-alpha)*previous_distance)/100;
         /* Set global variable "distance", this is the only producer */
-        WRITE_ATOMIC(distance, (alpha*measured_distance + (100-alpha)*previous_distance)/100);  // Apply a lowpass filter (IIR filter, complementary filter)
+        WRITE_ATOMIC(distance, distance_mm/10);  // Apply a lowpass filter (IIR filter, complementary filter)
         
         /* Update display if distance changed since last reading */
-        if (distance != previous_distance) {
+        if (distance != previous_distance/10) {
             char str[9];
             snprintf(str, sizeof(str), "%-3lu", distance);
             oledWriteString(8*sizeof(displayText), 0, str, false);  // update only distance number, to shorten the time
-            previous_distance = distance;
         }
-        
+        previous_distance = distance_mm;
+                
         /* If car should be moving, look at change in distance to object since reference was taken; 
            if distance change is small, compute time passed as stalled, otherwise, reset values */
-        if ((m_izdo.velocidad || m_dcho.velocidad) && abs(reference_distance - distance)<=2) {
+        if ((m_izdo.velocidad || m_dcho.velocidad) && abs(reference_distance - 10*distance)<=20) {  // if travelled distance < 20 mm, car is stalled
            stalledTime = tick - reference_tick;
         }
         else {
             stalledTime = 0;
             reference_tick = tick;
-            reference_distance = distance;
+            reference_distance = 10*distance;
         }
         
         /* If the stalled time is above threshold, set global variable "stalled" as true, otherwise as false */
