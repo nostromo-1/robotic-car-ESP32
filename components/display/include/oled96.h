@@ -14,11 +14,12 @@ Based on the following original code:
 
 *****************************************************************************/
 
+#include "driver/i2c_master.h"
+
 #define OLED_MAX_LINE_SIZE 17   // Max number of characters+1 in a line on the display, small font
 
 // Initialize the OLED96 library for a specific I2C address
-int oledInit(uint8_t iAddress);
-
+int oledInit(i2c_master_bus_handle_t i2c_bus_handle, uint8_t iAddress);
 
 // Turns off the display and closes the I2C handle
 void oledShutdown(void);
@@ -29,7 +30,6 @@ void oledClear(void);
 // Write a text string to the display at x (column 0-127) and y (row 0-7)
 // bLarge = 0 - 8x8 font, bLarge = 1 - 16x24 font
 int oledWriteString(int x, int y, const char *szText, bool bLarge);
-
 
 // Sets the contrast (brightness) level of the display
 // Valid values are 0-255 where 0=off and 255=max brightness

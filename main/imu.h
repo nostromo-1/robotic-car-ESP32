@@ -7,7 +7,7 @@ Control of the LSM9DS1 3D accelerometer, 3D gyroscope, 3D magnetometer
 *****************************************************************************/
 
 // Inicializa el sistema
-int setupLSM9DS1(uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate);
+int setupLSM9DS1(i2c_master_bus_handle_t i2c_bus_handle, uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate);
 
 // Cierra ordenadamente el sistema
 void closeLSM9DS1(void);

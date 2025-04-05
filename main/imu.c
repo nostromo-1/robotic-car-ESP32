@@ -37,15 +37,13 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp32/rom/ets_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "imu.h"
-//#include "ekf.h"
 #include "oled96.h"
-
 
 
 #define ERR(ret, format, arg...)                                       \
@@ -58,9 +56,10 @@ Magnetic field strength of Earth is about 0.5 gauss, 500 mGauss, 50 uTeslas or 5
 #define READ_ATOMIC(var) atomic_load_explicit(&var, memory_order_acquire)
 #define WRITE_ATOMIC(var,value) atomic_store_explicit(&var, value, memory_order_release)
 
-#define I2C_BUS I2C_NUM_0   // i2c bus of IMU
+#define I2C_FREQ 400000
 #define I2C_MASTER_TIMEOUT_MS 100
-#define FIFO_LINE_SIZE 12   // Size of FIFO lines (12 bytes each)
+
+#define FIFO_LINE_SIZE 12   // Size of FIFO lines in LSM9DS1 (12 bytes each)
 
 extern _Atomic bool collision;  // Car has crashed when moving forwards or backwards
 
@@ -71,19 +70,12 @@ typedef struct {
 } SampleList_t;
 
 
-// struct used for FIR filters
-typedef struct {
-  float *history;
-  const float *taps;
-  unsigned int last_index, taps_num;
-} Filter_t;
-
-
 static const char* TAG = __FILE__;
-static uint8_t accelAddr, magAddr;  // I2C addresses
+static i2c_master_dev_handle_t accel_handle, mag_handle;  // I2C addresses
+
 
 // Output variables of module
-float roll, pitch, yaw, tilt;
+float roll, pitch, yaw, tilt, azimuth;
 
 /* 
 Define ODR of accel/gyro and magnetometer. 
@@ -128,24 +120,6 @@ static const char *dev_file = "/spiffs/deviation.dat";   // File where standard 
 static const float declination = +1.962;    // Local magnetic declination as given by http://www.magnetic-declination.com/
 static const float default_magnetic_field = 0.459;  // Magnitude of the local magnetic field in Gauss (does not need to be exact)
 
-/* Madgwick filter variables */
-static float q[4] = {1.0, 0.0, 0.0, 0.0};    // vector to hold quaternion
-
-/// Quote from kriswinner regarding beta parameter:
-/* 
-There is a tradeoff in the beta parameter between accuracy and response speed.
-In the original Madgwick study, beta of 0.041 (corresponding to GyroMeasError of 2.7 degrees/s) was found to give optimal accuracy.
-However, with this value, the LSM9SD0 response time is about 10 seconds to a stable initial quaternion.
-Subsequent changes also require a longish lag time to a stable output, not fast enough for a quadcopter or robot car!
-By increasing beta (GyroMeasError) by about a factor of fifteen, the response time constant is reduced to ~2 sec
-I haven't noticed any reduction in solution accuracy. This is essentially the I coefficient in a PID control sense; 
-the bigger the feedback coefficient, the faster the solution converges, usually at the expense of accuracy. 
-In any case, this is the free parameter in the Madgwick filtering and fusion scheme. 
-*/
-
-// gyroscope measurement error in rads/s (start at 40 deg/s)
-#define GyroMeasError (M_PI * (40.0/180))
-//static const float beta = 1.73205/2 * GyroMeasError;   // compute beta, sqrt(3/4)*GyroMeasError
 
 
 /* Prototypes */
@@ -209,36 +183,39 @@ const float alpha = 0.05;
    
    /*** Translate angles in radians to degrees ***/
    tilt *= 180/M_PI; 
-   yaw *= 180/M_PI; yaw -= declination; if (yaw < 0) yaw += 360;  // yaw (heading) must be positive
    pitch *= 180/M_PI; 
-   roll *= 180/M_PI; 
+   roll *= 180/M_PI;
+   yaw *= 180/M_PI; 
+   yaw -= declination; 
+   if (yaw < -180) yaw += 360;  // yaw now refers to true north, between -180 and 180, positive westwards
+   azimuth = (yaw>0)?360-yaw:-yaw;  // bearing follows naval convention, 0-360, positive to the east
 }
 
 
 /** I2C reading functions **/
 
 // Send a single byte value to a register in the IMU
-static esp_err_t i2cWriteByte(uint8_t addr, uint8_t reg, uint8_t val)
+static esp_err_t i2cWriteByte(i2c_master_dev_handle_t dev_handle, uint8_t reg, uint8_t val)
 {
 esp_err_t rc;
 uint8_t buf[2];
     
    buf[0] = reg;
    buf[1] = val;
-   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   rc = i2c_master_transmit(dev_handle, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);
    if (rc != ESP_OK) ERR(ESP_FAIL, "Error writing to IMU"); 
    return ESP_OK;
 }
 
 
 // Send a single byte value to a register in the IMU and read a number of bytes as response
-static esp_err_t i2cWriteReadBytes(uint8_t addr, uint8_t reg, uint8_t *read_buf, size_t read_size)
+static esp_err_t i2cWriteReadBytes(i2c_master_dev_handle_t dev_handle, uint8_t reg, uint8_t *read_buf, size_t read_size)
 {
 esp_err_t rc;
           
    if (read_size == 0) return 0;
    if (read_buf == NULL) return -1;
-   rc = i2c_master_write_read_device(I2C_BUS, addr, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   rc = i2c_master_transmit_receive(dev_handle, &reg, 1, read_buf, read_size, I2C_MASTER_TIMEOUT_MS);
    if (rc != ESP_OK) ERR(ESP_FAIL, "Error reading from IMU"); 
    return ESP_OK;
 }
@@ -256,7 +233,7 @@ int delay;
       if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
       else ets_delay_us(delay*1000); 
       
-      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
+      rc = i2cWriteReadBytes(accel_handle, 0x18, buf, sizeof(buf));
       if (rc != ESP_OK) goto rw_error;   
    }
    return 0;
@@ -385,13 +362,13 @@ const float conf95_factor = 1.96; // 95% of the area under a normal curve lies w
       if (delay > portTICK_PERIOD_MS) vTaskDelay(pdMS_TO_TICKS(delay));
       else ets_delay_us(delay*1000); 
       
-      rc = i2cWriteReadBytes(accelAddr, 0x27, &byte, 1);  // Read STATUS_REG register
+      rc = i2cWriteReadBytes(accel_handle, 0x27, &byte, 1);  // Read STATUS_REG register
       if (rc != ESP_OK) goto rw_error;
       if (byte&0x01) {  // New accelerometer data available
       
          // Burst read. Accelerometer and gyroscope sensors are activated at the same ODR
          // So read 12 bytes: 2x3x2
-         rc = i2cWriteReadBytes(accelAddr, 0x18, buf, sizeof(buf));
+         rc = i2cWriteReadBytes(accel_handle, 0x18, buf, sizeof(buf));
          if (rc != ESP_OK) goto rw_error;   
  
          /* Read accel and gyro data. X and Y axis are exchanged, so that reference system is
@@ -741,58 +718,71 @@ Initialize IMU LSM9DS1
 Input: I2C address of accel/gyro and of magnetometer, indication whether to perform calibration of IMU
 Return value: 0 (OK), -1 (read/write error), -2 (must perform calibration)
 ************************************************************/
-int setupLSM9DS1(uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate)
+int setupLSM9DS1(i2c_master_bus_handle_t i2c_bus_handle, uint8_t accel_addr, uint8_t mag_addr, bool do_calibrate)
 {
 esp_err_t rc;
 uint8_t byte;
+i2c_device_config_t accel_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = accel_addr,
+    .scl_speed_hz = I2C_FREQ,
+};
+i2c_device_config_t mag_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = mag_addr,
+    .scl_speed_hz = I2C_FREQ,
+};
 
    /***** Initial checks *****/
    assert(odr_ag_modes[ODR_AG] > odr_m_modes[ODR_M]);
    upsampling_factor = lroundf(odr_ag_modes[ODR_AG] / odr_m_modes[ODR_M]);
-   
+
+   rc = i2c_master_bus_add_device(i2c_bus_handle, &accel_cfg, &accel_handle);
+   if (rc != ESP_OK) goto rw_error;
+   rc = i2c_master_bus_add_device(i2c_bus_handle, &mag_cfg, &mag_handle);
+   if (rc != ESP_OK) goto rw_error;
+    
    // Check acelerometer/gyroscope   
-   rc = i2cWriteReadBytes(accel_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
+   rc = i2cWriteReadBytes(accel_handle, 0x0F, &byte, 1);  // Read WHO_AM_I register
    if (rc != ESP_OK) goto rw_error;
    if (byte != 0x68) ERR(-1, "Invalid accelerometer/gyroscope device");
-   accelAddr = accel_addr;
    
    // Check magnetometer  
-   rc = i2cWriteReadBytes(mag_addr, 0x0F, &byte, 1);  // Read WHO_AM_I register
+   rc = i2cWriteReadBytes(mag_handle, 0x0F, &byte, 1);  // Read WHO_AM_I register
    if (rc != ESP_OK) goto rw_error;
    if (byte != 0x3D) ERR(-1, "Invalid magnetometer device");  
-   magAddr = mag_addr;
      
    /************************* Set Magnetometer ***********************/
    // Set magnetometer, CTRL_REG1_M
    // TEMP_COMP: Yes (b1), XY mode: ultra (b11), ODR: 40 Hz (b110), 0 (b0), ST: No (b0)
    byte = (0x01<<7) + (0x03<<5) + (ODR_M<<2) + 0x0; 
-   rc = i2cWriteByte(magAddr, 0x20, byte);
+   rc = i2cWriteByte(mag_handle, 0x20, byte);
    if (rc < 0) goto rw_error;  
    
    // Set magnetometer, CTRL_REG2_M
    // 0 (b0), FS: 4 Gauss (b00), REBOOT: 0 (b0), SOFT_RST: 0 (b0), 0 (b0), 0 (b0)
    // 4000 mGauss is enough for earth magnetic field + hardiron offset
    byte = 0x0; 
-   rc = i2cWriteByte(magAddr, 0x21, byte);
+   rc = i2cWriteByte(mag_handle, 0x21, byte);
    if (rc != ESP_OK) goto rw_error;   
    mRes = 4.0/32768;   // G/LSB
    
    // Activate magnetometer, CTRL_REG3_M
    // I2C: enabled (b0), 0 (b0), LP: No (b0), 0 (b0), 0 (b0), SPI: wo (b0), mode: Continuous (b00)
    byte = 0x0; 
-   rc = i2cWriteByte(magAddr, 0x22, byte);
+   rc = i2cWriteByte(mag_handle, 0x22, byte);
    if (rc != ESP_OK) goto rw_error; 
       
    // Set magnetometer, CTRL_REG4_M
    // OMZ: ultra (b11), BLE: data LSb at lower address (b0)
    byte = 0x03<<2; 
-   rc = i2cWriteByte(magAddr, 0x23, byte);
+   rc = i2cWriteByte(mag_handle, 0x23, byte);
    if (rc < 0) goto rw_error;
    
    // Set magnetometer, CTRL_REG5_M
    // BDU:  continuous update (b0)
    byte = 0x00; 
-   rc = i2cWriteByte(magAddr, 0x24, byte);
+   rc = i2cWriteByte(mag_handle, 0x24, byte);
    if (rc != ESP_OK) goto rw_error;
    
    /************************* Set Acelerometer / Gyroscope ***********************/   
@@ -800,19 +790,19 @@ uint8_t byte;
    // BOOT: normal mode (b0), BDU: continuous update (b0), H_LACTIVE: active high (b0),
    // PP_OD: 0 (b0), SIM: 0 (b0), IF_ADD_INC: enabled (b1), BLE: data LSB @ lower address (b0), SW_RESET: normal mode (b0)
    byte = 0x04; 
-   rc = i2cWriteByte(accelAddr, 0x22, byte);
+   rc = i2cWriteByte(accel_handle, 0x22, byte);
    if (rc != ESP_OK) goto rw_error; 
    
    // Set accelerometer, CTRL_REG5_XL
    // DEC: no decimation (b00), Zen_XL, Yen_XL, Xen_XL: enabled (b1)
    byte = (0x00<<6) + (0x07<<3); 
-   rc = i2cWriteByte(accelAddr, 0x1F, byte);
+   rc = i2cWriteByte(accel_handle, 0x1F, byte);
    if (rc != ESP_OK) goto rw_error; 
  
    // Set accelerometer, CTRL_REG6_XL
    // ODR: Power down (b000), FS: 2g (b00), BW_SCAL: auto (b0), BW sel: 408 Hz (b00)
    byte = (0x00<<5) + (0x0<<3) + 0x0; 
-   rc = i2cWriteByte(accelAddr, 0x20, byte);
+   rc = i2cWriteByte(accel_handle, 0x20, byte);
    if (rc != ESP_OK) goto rw_error; 
    aRes = 2.0/32768;   // g/LSB
 
@@ -820,44 +810,44 @@ uint8_t byte;
    // HR: enabled (b1), DCF: ODR/9 (b10), FDS: internal filter bypassed (b0), HPIS1: filter bypassed (b0)
    // both LPF enabled, HPF disabled
    byte = (0x01<<7) + (0x02<<5) + 0x0; 
-   rc = i2cWriteByte(accelAddr, 0x21, byte);
+   rc = i2cWriteByte(accel_handle, 0x21, byte);
    if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, CTRL_REG4
    // Zen_G, Yen_G, Xen_G: enabled (b1), LIR_XL1: 0 (b0), 4D_XL1: 0 (b0)
    byte = 0x07<<3; 
-   rc = i2cWriteByte(accelAddr, 0x1E, byte);
+   rc = i2cWriteByte(accel_handle, 0x1E, byte);
    if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, ORIENT_CFG_G
    // SignX_G, SignX_G, SignX_G: positive sign (b0), Orient: 0 (b000) (Pitch:X, Roll:Y, Yaw:Z)
    byte = 0x00; 
-   rc = i2cWriteByte(accelAddr, 0x13, byte);
+   rc = i2cWriteByte(accel_handle, 0x13, byte);
    if (rc != ESP_OK) goto rw_error; 
    
    // Activate accelerometer and gyro, CTRL_REG1_G. Both use the same ODR
    // ODR: xxx Hz LPF1 31 Hz (b011), Gyro scale: 245 dps (b00), 0 (b0), Gyro BW LPF2: 31 Hz (b01)
    // The ODR is variable, acc. ODR_AG, LPF2 is set to be always around 30 Hz (b01) (for ODR of 119 Hz and above)
    byte = (ODR_AG<<5) + (0x0<<3) + 0x01; 
-   rc = i2cWriteByte(accelAddr, 0x10, byte);
+   rc = i2cWriteByte(accel_handle, 0x10, byte);
    if (rc != ESP_OK) goto rw_error; 
    gRes = 245.0/32768;   // dps/LSB
    
    // Set gyro, CTRL_REG2_G
    // INT_SEL: 0 (b00), OUT_SEL: 0 (b10) (output after LPF2)
    byte = 0x02; 
-   rc = i2cWriteByte(accelAddr, 0x11, byte);
+   rc = i2cWriteByte(accel_handle, 0x11, byte);
    if (rc != ESP_OK) goto rw_error; 
    
    // Set gyro, CTRL_REG3_G
    // LP_mode: disabled (b0), HP_EN: disabled (b0), HPCF_G: 0.5 Hz for 119 Hz ODR (b0100) 
    // both LPF enabled, HPF disabled
    byte = (0x0<<7) + (0x0<<6) + 0x04; 
-   rc = i2cWriteByte(accelAddr, 0x12, byte);
+   rc = i2cWriteByte(accel_handle, 0x12, byte);
    if (rc != ESP_OK) goto rw_error;  
 
    /* Empty and reset FIFO, in case it was active, so we start afresh */
-   rc = i2cWriteByte(accelAddr, 0x2E, 0x00);  // Reset existing FIFO content by selecting FIFO Bypass mode 
+   rc = i2cWriteByte(accel_handle, 0x2E, 0x00);  // Reset existing FIFO content by selecting FIFO Bypass mode 
    if (rc != ESP_OK) goto rw_error;  
  
    /* Initial samples after FIFO change and after power up (Table 12 of user manual) have to be discarded */
@@ -877,14 +867,14 @@ uint8_t byte;
    // Set FIFO, FIFO_CTRL
    // FMODE: continuous mode (b110), threshold: 0 (b00000)
    byte = (0x06<<5) + 0x0; 
-   rc = i2cWriteByte(accelAddr, 0x2E, byte);
+   rc = i2cWriteByte(accel_handle, 0x2E, byte);
    if (rc != ESP_OK) goto rw_error; 
 
    // Activate FIFO, CTRL_REG9
    // SLEEP_G: disabled (b0), FIFO_TEMP_EN: no (b0), 
    // DRDY_mask_bit: disabled (b0), I2C_DISABLE: both (b0), FIFO_EN: yes (b1), STOP_ON_FTH: no (b0)
    byte = 0x02; 
-   rc = i2cWriteByte(accelAddr, 0x23, byte);
+   rc = i2cWriteByte(accel_handle, 0x23, byte);
    if (rc != ESP_OK) goto rw_error;  
    
    rc = read_discard_fifo_samples(2);  // Discard samples after FIFO activation
@@ -923,7 +913,7 @@ uint8_t byte, buf[6];
 esp_err_t rc;
 
    // Read status register in magnetometer, to check if new data is available
-   rc = i2cWriteReadBytes(magAddr, 0x27, &byte, 1);  // Read magnetometer STATUS_REG register
+   rc = i2cWriteReadBytes(mag_handle, 0x27, &byte, 1);  // Read magnetometer STATUS_REG register
    if (rc != ESP_OK) return -1;    // Read error, error message already sent
    if ((byte&0x08) == 0) return 0; // If no new data available, return 0
 
@@ -931,7 +921,7 @@ esp_err_t rc;
       Read magnetometer data. X and Y axis are exchanged, and then Y is negated, 
       so align the axis with the ones used in this module for car orientation */
          
-   rc = i2cWriteReadBytes(magAddr, 0x28, buf, sizeof(buf));  // Read 6 bytes (X,Y,Z axis), starting in OUT_X_L_M register
+   rc = i2cWriteReadBytes(mag_handle, 0x28, buf, sizeof(buf));  // Read 6 bytes (X,Y,Z axis), starting in OUT_X_L_M register
    if (rc != ESP_OK) return -1;   // Read error, error message already sent
    
    *my = buf[1]<<8 | buf[0]; *mx = buf[3]<<8 | buf[2]; *mz = buf[5]<<8 | buf[4];  
@@ -1011,7 +1001,6 @@ static unsigned int samples_count, collision_sample;
 float axr, ayr, azr;
 float gxr, gyr, gzr;
 float mxr, myr, mzr;
-float daxr;
 static float axr_history[3];
    
    //int64_t start_tick = esp_timer_get_time();
@@ -1033,7 +1022,7 @@ static float axr_history[3];
    than that of magnetometer. The accel/gyro stores samples in the FIFO until it is read.
    **/
 
-   rc = i2cWriteReadBytes(accelAddr, 0x2F, &byte, 1);  // Read FIFO_SRC register
+   rc = i2cWriteReadBytes(accel_handle, 0x2F, &byte, 1);  // Read FIFO_SRC register
    if (rc < 0) goto rw_error;
    if (byte & 0x40) ESP_LOGW(TAG, "%s: FIFO overrun!", __func__);  // Should not happen
    // samples in FIFO are between 3 and 4, average 3: AG ODR = 119 Hz, M ODR = 40 Hz, 119/40=3
@@ -1048,7 +1037,7 @@ static float axr_history[3];
    if (samples) {  // if FIFO has sth, read it
       /* Burst read. Accelerometer and gyroscope sensors are activated at the same ODR.
          So read all FIFO lines (12 bytes each) in a single I2C transaction */
-      rc = i2cWriteReadBytes(accelAddr, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms for 7 samples
+      rc = i2cWriteReadBytes(accel_handle, 0x18, buf, FIFO_LINE_SIZE*samples);  // Takes ca. 2.2 ms for 7 samples
       if (rc < 0) goto rw_error;         
    }
 
@@ -1074,24 +1063,22 @@ static float axr_history[3];
 
       // Interpolate magnetic samples to get same ODR as accel/gyro
       float* mr = interpolation_filter(upsampling_factor, mxr, myr, mzr);
-      
-      //printf("axr=%.1f ayr=%.1f azr=%.1f\n", axr, ayr, azr);
       //printf("Magnetic field: %f\n", sqrtf(mxr*mxr+myr*myr+mzr*mzr));
             
       /***** IMU data is available. Now perform whatever operations are needed with the obtained values *****/
       
-      getOrientation(axr, ayr, azr, mr[0], mr[1], mr[2]);  // Sets global variables roll, pitch, yaw, tilt;
+      getOrientation(axr, ayr, azr, mr[0], mr[1], mr[2]);  // Sets global variables roll, pitch, yaw, tilt, azimuth;
       //printf("Yaw %3.0f   Pitch %3.0f   Roll %3.0f   Tilt %3.0f\n", yaw, pitch, roll, tilt);
       
-      if ((samples_count++&0x1F) == 0) {
-         snprintf(str, sizeof(str), "Yaw: %3.0f ", yaw);  
+      if ((samples_count++ & 0x1F) == 0) {
+         snprintf(str, sizeof(str), "Azimuth: %3.0f ", azimuth);  
          oledWriteString(0, 6, str, false);    
       }
-      
+      // Check if car front-crashed by looking at acceleration in x axis
       // shift historical values of axr by one: one timestep has passed
       axr_history[2] = axr_history[1]; axr_history[1] = axr_history[0]; axr_history[0] = axr;
       // compute 1st order derivative, using central-difference differentiator
-      daxr = axr_history[0] - axr_history[2];
+      float daxr = axr_history[0] - axr_history[2];
 
       if (!collision && fabs(daxr) > 0.4) {   // Value found experimentally
          collision_sample = samples_count;
@@ -1102,17 +1089,16 @@ static float axr_history[3];
       if (collision && (samples_count - collision_sample)*delta_t > 0.1) { // clear collision flag 0.1 seconds after raising it
          WRITE_ATOMIC(collision, false);
          oledSetInversion(false);
-      }      
+      }
       
    
    }
 
-   //printf("Time: %lld us\n", esp_timer_get_time() - start_tick);
+   //printf("Time in IMU_read: %lld us\n", esp_timer_get_time() - start_tick);
    return;
    
 /* error handling if read operation from I2C bus failed */
 rw_error:
-   //closeLSM9DS1();
    ERR(, "Cannot read/write data from IMU");
 }
 

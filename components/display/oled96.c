@@ -7,19 +7,15 @@ Based on code written by Larry Bank (bitbank@pobox.com)
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
-#include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "oled96.h"
 #include "fonts.h"
 
-#define I2C_BUS                 I2C_NUM_0    // I2C bus of display
-#define I2C_MASTER_TIMEOUT_MS   150          // 100 ms creates problemas (timeout) with IMU
-#define ACK_CHECK_EN            0x1          /* I2C master will check ack from slave*/
-#define ACK_CHECK_DIS           0x0          /* I2C master will not check ack from slave */
-#define ACK_VAL                 0x0          /* I2C ack value */
-#define NACK_VAL                0x1          /* I2C nack value */
+
+#define I2C_FREQ 400000
+#define I2C_MASTER_TIMEOUT_MS 1000
 
 
 #define ERR(ret, format, arg...)                                       \
@@ -45,9 +41,9 @@ Based on code written by Larry Bank (bitbank@pobox.com)
 
 static const char* TAG = __FILE__;
 static uint8_t xpos, ypos;   // current cursor position
-static uint8_t displayAddr;
 static SemaphoreHandle_t mutex = NULL;
-    
+static i2c_master_dev_handle_t dev_handle;
+ 
 static int oledWriteCommand(uint8_t);
 static int oledWriteCommand2(uint8_t c, uint8_t d);
 static int oledSetPosition(uint8_t x, uint8_t y);
@@ -55,18 +51,27 @@ static int oledWriteDataBlock(const uint8_t *ucBuf, uint8_t iLen);
 
 
 // Initializes the OLED controller into "page mode"
-int oledInit(uint8_t iAddr)
+int oledInit(i2c_master_bus_handle_t i2c_bus_handle, uint8_t iAddr)
 {
 esp_err_t rc;
 uint8_t initbuf[]={0x00,0xae,0xa8,0x3f,0xd3,0x00,0x40,0xa0,0xa1,0xc0,0xc8,
 			0xda,0x12,0x81,0xff,0xa4,0xa6,0xd5,0x80,0x8d,0x14,0x20,0x02};
 
+i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = iAddr,
+    .scl_speed_hz = I2C_FREQ,
+};
+   
+    rc = i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg, &dev_handle);
+    if (rc != ESP_OK) goto rw_error;
+    
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL) goto rw_error;
-    displayAddr = iAddr;
-    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, initbuf, sizeof(initbuf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (rc != ESP_OK) goto rw_error;   
     
+    rc = i2c_master_transmit(dev_handle, initbuf, sizeof(initbuf), I2C_MASTER_TIMEOUT_MS);
+    if (rc != ESP_OK) goto rw_error;
+      
     oledClear();
     oledWriteCommand(0xAF);  // turn on OLED
     oledSetContrast(128);
@@ -74,7 +79,6 @@ uint8_t initbuf[]={0x00,0xae,0xa8,0x3f,0xd3,0x00,0x40,0xa0,0xa1,0xc0,0xc8,
 
    // error handling if operation from I2C bus failed
 rw_error:
-   displayAddr = 0;
    ERR(-1, "Cannot write data to display"); 
 } 
 
@@ -107,7 +111,7 @@ esp_err_t rc;
    buf[1] = 0xB0 | y;  // go to page Y
    buf[2] = 0x00 | (x & 0x0f);   // lower col addr
    buf[3] = 0x10 | (x >> 4);     // upper col addr
-   rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+   rc = i2c_master_transmit(dev_handle, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);
    if (rc != ESP_OK) goto rw_error; 
    xpos = x; ypos = y;
    return 0;
@@ -134,7 +138,7 @@ int rest;
     
 	 // Write data to display, taking care not to overflow to beginning of row (display in page mode)
     rest = ((128-xpos) <= iLen)?(128-xpos):iLen;
-    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, ucTemp, rest+1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    rc = i2c_master_transmit(dev_handle, ucTemp, rest+1, I2C_MASTER_TIMEOUT_MS);
     if (rc != ESP_OK) goto rw_error;   
     xpos += rest;
     return 0;
@@ -153,7 +157,7 @@ uint8_t buf[2];
 
     buf[0] = 0x00;  // 0x00 is the command introducer
     buf[1] = c;
-    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);   
+    rc = i2c_master_transmit(dev_handle, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);
     if (rc != ESP_OK) ERR(-1, "Error writing to display"); 
     return 0;
 }
@@ -166,8 +170,8 @@ uint8_t buf[3];
 
     buf[0] = 0x00;  // 0x00 is the command introducer
     buf[1] = c;
-    buf[2] = d;
-    rc = i2c_master_write_to_device(I2C_BUS, displayAddr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);     
+    buf[2] = d; 
+    rc = i2c_master_transmit(dev_handle, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);    
     if (rc != ESP_OK) ERR(-1, "Error writing to display"); 
     return 0;    
 } 
@@ -190,11 +194,8 @@ int rc;
 // Closes the I2C file handle
 void oledShutdown()
 {
-    printf("Closing display...\n");
-
     xSemaphoreTake(mutex, portMAX_DELAY);
     oledWriteCommand(0xAE); // turn off OLED
-    displayAddr = 0;
     xSemaphoreGive(mutex);
 }
 

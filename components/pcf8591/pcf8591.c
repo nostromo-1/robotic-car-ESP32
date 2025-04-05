@@ -9,8 +9,9 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 *****************************************************************************/
 
 #include <stdio.h>
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #include "pcf8591.h"
 
@@ -23,11 +24,11 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
    
   
 /* i2c bus where PCF8591 is connected */
-#define I2C_BUS                 I2C_NUM_1 
+#define I2C_FREQ 100000
 #define I2C_MASTER_TIMEOUT_MS   100
 
+static i2c_master_dev_handle_t dev_handle;
 static const char* TAG = __FILE__;
-static uint8_t chipAddr;
 static uint32_t voltage_global;
 
 
@@ -50,23 +51,30 @@ static const uint32_t factor_v2 = 3300*2/255 + 0.5;
 static const uint32_t factor_i = 3300/(0.1*1100/100)/255 + 0.5;  
 
 
-int setupPCF8591(uint8_t addr)
+int setupPCF8591(i2c_master_bus_handle_t i2c_bus_handle, uint8_t addr)
 {
 esp_err_t rc;
 uint8_t buf[2];
-   
+i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = addr,
+    .scl_speed_hz = I2C_FREQ,
+};
+    
+   rc = i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg, &dev_handle);
+   if (rc != ESP_OK) goto rw_error;
+    
    // Initialize chip
    buf[0] = 0b01000110;  // Control byte: set autoincrement flag, start reading channel 2, single ended inputs, enable DAC 
-   buf[1] = 0;           // Set DAC output to zero
-   rc = i2c_master_write_to_device(I2C_BUS, addr, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);       
+   buf[1] = 0;           // Set DAC output to zero 
+   rc = i2c_master_transmit(dev_handle, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);   
    if (rc != ESP_OK) goto rw_error;  
    
    vTaskDelay(pdMS_TO_TICKS(10));   // Does not read correctly without delay
 
-   // Read previous conversion and ignore it
-   rc = i2c_master_read_from_device(I2C_BUS, addr, buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);        
+   // Read previous conversion and ignore it  
+   rc = i2c_master_receive(dev_handle, buf, 1, I2C_MASTER_TIMEOUT_MS);   
    if (rc != ESP_OK) goto rw_error;  
-   chipAddr = addr;
    return 0;
    
    /* error handling if read operation from I2C bus failed */
@@ -93,9 +101,7 @@ Low currents (in tens of mA) are overestimated.
 void readPowerSupply(uint32_t *voltage, uint32_t *battery1, uint32_t *current)
 {
 uint8_t adc[4];  // Store ADC values
-esp_err_t ret;
-
-   if (chipAddr == 0) return;  // Could not initialize
+esp_err_t rc;
 
    /* 
       Read all 4 ADC channels: ch2, ch3, ch0, ch1 into adc array
@@ -104,8 +110,8 @@ esp_err_t ret;
       Reading in this order is done so that ch0 (V) and ch1 (I) 
       are triggered and read in this function call, no delay between both
    */
-   ret = i2c_master_read_from_device(I2C_BUS, chipAddr, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-   if (ret != ESP_OK) goto rw_error;
+   rc = i2c_master_receive(dev_handle, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS);   
+   if (rc != ESP_OK) goto rw_error;
 
    voltage_global = *voltage = factor_v*adc[2];  // Battery voltage level, channel 0
    *current = factor_i*adc[3];  // Current draw, channel 1

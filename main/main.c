@@ -22,7 +22,7 @@ This is a ESP32 port of the original Raspberry Pi project.
 #include "esp_rom_sys.h"
 #include "esp32/rom/ets_sys.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -70,19 +70,10 @@ This is a ESP32 port of the original Raspberry Pi project.
 
 #define I2C0_SCL_IO       22          /* GPIO number used for I2C0 master clock */
 #define I2C0_SDA_IO       21          /* GPIO number used for I2C0 master data  */
-#define I2C0_NUM          I2C_NUM_0   /* I2C master i2c0 port number */
-#define I2C0_FREQ         400000      /* I2C master clock frequency */
 
 #define I2C1_SCL_IO       23          /* GPIO number used for I2C1 master clock */
 #define I2C1_SDA_IO       19          /* GPIO number used for I2C1 master data  */
-#define I2C1_NUM          I2C_NUM_1   /* I2C master i2c1 port number */
-#define I2C1_FREQ         100000      /* I2C master clock frequency */
 
-#define I2C_TIMEOUT       100          /* I2C bus timeout in ms */
-#define ACK_CHECK_EN      0x1          /* I2C master will check ack from slave */
-#define ACK_CHECK_DIS     0x0          /* I2C master will not check ack from slave */
-#define ACK_VAL           0x0          /* I2C ack value */
-#define NACK_VAL          0x1          /* I2C nack value */
 
 #define STACK_SIZE 2048
 
@@ -194,6 +185,7 @@ static TaskHandle_t xMainTask;
 static QueueHandle_t wav_queue;
 static int LEDs[] = {0b0001, 0b0011, 0b0111, 0b1111};
 static const esp_app_desc_t* fw_description;
+static i2c_master_bus_handle_t i2c_bus0_handle, i2c_bus1_handle;
 
 
 // program options, specified in menuconfig
@@ -373,49 +365,27 @@ TaskHandle_t xHandle = NULL;
 // setup i2c master buses
 static void i2c_master_init()
 {  
-   i2c_config_t conf0 = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = I2C0_SDA_IO,         // select SDA GPIO
-    .scl_io_num = I2C0_SCL_IO,         // select SCL GPIO
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = I2C0_FREQ,     // select frequency
-    .clk_flags = 0,                    // optional; you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here
+   i2c_master_bus_config_t i2c0_mst_config = {
+    .clk_source = I2C_CLK_SRC_DEFAULT,
+    .i2c_port = I2C_NUM_0,
+    .scl_io_num = I2C0_SCL_IO,
+    .sda_io_num = I2C0_SDA_IO,
+    .glitch_ignore_cnt = 7,
+    .flags.enable_internal_pullup = true,
    };
 
-   ESP_ERROR_CHECK(i2c_param_config(I2C0_NUM, &conf0));
-   ESP_ERROR_CHECK(i2c_driver_install(I2C0_NUM, conf0.mode, 0, 0, 0));
-   
-   i2c_config_t conf1 = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = I2C1_SDA_IO,         // select SDA GPIO
-    .scl_io_num = I2C1_SCL_IO,         // select SCL GPIO
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = I2C1_FREQ,     // select frequency 
-    .clk_flags = 0,                    // optional; you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here
+   ESP_ERROR_CHECK(i2c_new_master_bus(&i2c0_mst_config, &i2c_bus0_handle));
+
+   i2c_master_bus_config_t i2c1_mst_config = {
+    .clk_source = I2C_CLK_SRC_DEFAULT,
+    .i2c_port = I2C_NUM_1,
+    .scl_io_num = I2C1_SCL_IO,
+    .sda_io_num = I2C1_SDA_IO,
+    .glitch_ignore_cnt = 7,
+    .flags.enable_internal_pullup = true,
    };
 
-   ESP_ERROR_CHECK(i2c_param_config(I2C1_NUM, &conf1));
-   ESP_ERROR_CHECK(i2c_driver_install(I2C1_NUM, conf1.mode, 0, 0, 0));  
-
-   /*
-   // Scan I2C buses
-   for (int bus=0; bus<=1; bus++) {
-      printf("i2c%i scan: \n", bus);
-      for (uint8_t i = 1; i < 127; i++) {
-         esp_err_t ret;
-         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-         i2c_master_start(cmd);
-         i2c_master_write_byte(cmd, (i << 1) | I2C_MASTER_WRITE, ACK_CHECK_EN);
-         i2c_master_stop(cmd);
-         ret = i2c_master_cmd_begin((bus==0)?I2C0_NUM:I2C1_NUM, cmd, I2C_TIMEOUT / portTICK_PERIOD_MS);
-         i2c_cmd_link_delete(cmd);
-    
-         if (ret == ESP_OK) printf("Found device at: 0x%2x\n", i);
-      }
-   }
-   */
+   ESP_ERROR_CHECK(i2c_new_master_bus(&i2c1_mst_config, &i2c_bus1_handle));
 }
 
 
@@ -463,11 +433,6 @@ int setupMotor(Motor_t *motor)
 
 int setupSonarHCSR04(void)
 {
-   /*
-   gpio_set_direction(sonarHCSR04.trigger_pin, GPIO_MODE_OUTPUT);
-   gpio_set_direction(sonarHCSR04.echo_pin, GPIO_MODE_INPUT);
-   gpio_set_level(sonarHCSR04.trigger_pin, 0);
-   */
    if (ultrasonic_init(&sonarHCSR04) == ESP_OK) return 0;
    return 1;
 }
@@ -557,8 +522,10 @@ int setup(void)
 int rc;
 uint32_t voltage, current, battery1;
    
-   i2c_master_init(); 
-   if (oledInit(DISPLAY_I2C)) return 1;
+   i2c_master_init();
+   
+   // Display
+   if (oledInit(i2c_bus0_handle, DISPLAY_I2C)) return 1;
    oledSetInversion(true);   // Fill display, as life sign
    
    // Write app name and version on display
@@ -566,7 +533,8 @@ uint32_t voltage, current, battery1;
    oledWriteString(0, 1, fw_description->version, false);
    vTaskDelay(pdMS_TO_TICKS(500));
    
-   if (setupPCF8591(PCF8591_I2C)) return 1;
+   // Power supply checker
+   if (setupPCF8591(i2c_bus1_handle, PCF8591_I2C)) return 1;
    readPowerSupply(&voltage, &battery1, &current);
    if (voltage < 2*3000) {
       ESP_LOGE(TAG, "Power supply is too low (%ld mV). Aborting start.", voltage);
@@ -577,7 +545,7 @@ uint32_t voltage, current, battery1;
    gpio_reset_pin(mando.scan_pin);  // Enables pull-up
    gpio_set_direction(mando.scan_pin, GPIO_MODE_INPUT);
    
-   // Wifi code
+   // Wifi
    bool do_wps = (gpio_get_level(mando.scan_pin) == 0);
    rc = init_wifi_network(do_wps);   // Start wifi; uses WPS if mando.scan_pin is pressed when starting wifi
    if (rc == 0) {   // wifi is up
@@ -587,10 +555,9 @@ uint32_t voltage, current, battery1;
    }
    oledClear();
    
-   // Queue used to communicate with wav playing task
-   wav_queue = xQueueCreate(1, sizeof(char*));
+   // Sound
+   wav_queue = xQueueCreate(1, sizeof(char*));  // Queue used to communicate with wav playing task
    if (wav_queue == NULL) return 1;
-
    setupSound(AMPLI_PIN);  // Initialize and setup sound
    
    // Buzzer
@@ -601,25 +568,29 @@ uint32_t voltage, current, battery1;
    bocina.mutex = xSemaphoreCreateMutex();
    if (bocina.mutex == NULL) return 1;
    
+   // Motors
    if (setupMotor(&m_izdo)) return 1;
    if (setupMotor(&m_dcho)) return 1;
    
+   // Wiimote
    if (setupWiimote()) return 1;
       
+   // IMU
    oledBigMessage(0, "CALIB?");
    vTaskDelay(pdMS_TO_TICKS(2000));
    bool do_calibrate = (gpio_get_level(mando.scan_pin) == 0);  // if button is pressed, the user wants to calibrate IMU
    oledBigMessage(0, NULL);
    while (gpio_get_level(mando.scan_pin) == 0) vTaskDelay(pdMS_TO_TICKS(100));   // Wait till user releases button
-   rc = setupLSM9DS1(LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate);  // Setup IMU sensor
-   if (rc == -2) {  // Not calibration data, and user did not press button
+   
+   rc = setupLSM9DS1(i2c_bus0_handle, LSM9DS1_GYR_ACEL_I2C, LSM9DS1_MAG_I2C, do_calibrate);  // Setup IMU sensor
+   if (rc == -2) {  // No calibration data, and user did not press push button
       oledBigMessage(0, "PLEASE");
       oledBigMessage(1, "CALIB ME");
       pito(10, 1);    // Buzz for 10 tenths of a second, wait till done
       esp_system_abort("Must calibrate IMU first");
    }
-   //if (rc == 0) use_IMU = true;
-      
+   
+   // Sonar
    if (setupSonarHCSR04()) return 1;
       
    // Call wmScan when button is pressed
@@ -816,9 +787,9 @@ const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
             continue;
         }
         
-        distance_mm = (alpha*10*measured_distance + (100-alpha)*previous_distance)/100;
+        distance_mm = (alpha*10*measured_distance + (100-alpha)*previous_distance)/100; // Apply a lowpass filter (IIR complementary filter)
         /* Set global variable "distance", this is the only producer */
-        WRITE_ATOMIC(distance, distance_mm/10);  // Apply a lowpass filter (IIR filter, complementary filter)
+        WRITE_ATOMIC(distance, distance_mm/10);  
         
         /* Update display if distance changed since last reading */
         if (distance != previous_distance/10) {
@@ -836,7 +807,7 @@ const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
         else {
             stalledTime = 0;
             reference_tick = tick;
-            reference_distance = 10*distance;
+            reference_distance = distance_mm;
         }
         
         /* If the stalled time is above threshold, set global variable "stalled" as true, otherwise as false */
