@@ -27,8 +27,9 @@ Reference voltage for ADC is a 3.3V precision voltage regulator: NCP5146, 1% acc
 #define I2C_FREQ 100000
 #define I2C_MASTER_TIMEOUT_MS   100
 
-static i2c_master_dev_handle_t dev_handle;
+
 static const char* TAG = __FILE__;
+static i2c_master_dev_handle_t dev_handle;
 static uint32_t voltage_global;
 
 
@@ -46,7 +47,7 @@ static const uint32_t factor_v2 = 3300*2/255 + 0.5;
 // 0.1 is the sensing resistor (1%)
 // current = voltage measured / 1.1
 // Accuracy: 6 mA due to offset voltage in opamp (600 uV in NPN stage, thus 0.6 mV/0.1) 
-// plus 12 mA due to ADC error (13 mV/1.1), which is a total error of about +-9 mA
+// plus 12 mA due to ADC error (13 mV/1.1), which is a total error of about +-18 mA
 // Max. allowed current value: 3 A
 static const uint32_t factor_i = 3300/(0.1*1100/100)/255 + 0.5;  
 
@@ -110,7 +111,7 @@ esp_err_t rc;
       Reading in this order is done so that ch0 (V) and ch1 (I) 
       are triggered and read in this function call, no delay between both
    */
-   rc = i2c_master_receive(dev_handle, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS);   
+   rc = i2c_master_receive(dev_handle, adc, sizeof(adc), I2C_MASTER_TIMEOUT_MS);   // Takes 0.5 ms
    if (rc != ESP_OK) goto rw_error;
 
    voltage_global = *voltage = factor_v*adc[2];  // Battery voltage level, channel 0

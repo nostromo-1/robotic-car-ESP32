@@ -22,6 +22,7 @@ It implements a simple file server to read the .dat files in the storage filesys
 #include "esp_vfs.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
+#include "esp_crt_bundle.h"
 
 #include "esp_ota_ops.h"
 #include "esp_https_ota.h"
@@ -42,10 +43,8 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 static const char* TAG = __FILE__;
-// URL of firmware to download at start
+// URL of firmware to download at boot
 static const char* ota_url = "https://raw.githubusercontent.com/nostromo-1/robotic-car-ESP32/master/build/robotic-car.bin";
-// PEM certificate for downloading OTA firmware. It is embedded in the program file at build time.
-extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_raw_githubusercontent_com_pem_start");
 
 static esp_wps_config_t wps_config = WPS_CONFIG_INIT_DEFAULT(WPS_TYPE_PBC);
 static wifi_config_t wps_ap_creds[MAX_WPS_AP_CRED];
@@ -344,14 +343,14 @@ char local_version[sizeof(new_app_info->version)];
 
 /**
 Look for new firmware version in github. 
-If firmware there has a newer version than the local one, download it and restart CPU.
+If firmware there has a newer version than the local one, download it and restart MCU.
 **/
 void get_ota_firmware(void)
 {
-esp_err_t err, ota_finish_err = ESP_OK;
+esp_err_t err, ota_finish_err;
 esp_http_client_config_t config = {
         .url = ota_url,
-        .cert_pem = (char *)server_cert_pem_start,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .event_handler = http_event_handler,
         .timeout_ms = OTA_TIMEOUT_MS,
         .keep_alive_enable = true,
@@ -361,7 +360,6 @@ esp_https_ota_config_t ota_config = {
         .http_config = &config,
         .http_client_init_cb = _http_client_init_cb, // Register a callback to be invoked after esp_http_client is initialized
         .partial_http_download = true,
-        .max_http_request_size = CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
 };
     
     ESP_LOGI(TAG, "Attempting to download firmware update from %s", config.url);
@@ -372,22 +370,27 @@ esp_https_ota_config_t ota_config = {
     err = esp_https_ota_begin(&ota_config, &https_ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
-        return;
+        goto ota_error;
     }
     esp_app_desc_t app_desc;
     err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed");
-        goto ota_end;
+        goto ota_abort;
     }        
     err = validate_image_header(&app_desc);
-    if (err != ESP_OK) goto ota_end;
+    if (err != ESP_OK) {  // Do not download firmware
+       esp_https_ota_abort(https_ota_handle);
+       ESP_LOGI(TAG, "Firmware NOT updated");
+       return;
+    }
     
     int ota_size = esp_https_ota_get_image_size(https_ota_handle);
     if (ota_size == -1) {
         ESP_LOGE(TAG, "esp_https_ota_get_image_size failed");
-        goto ota_end;       
+        goto ota_abort;       
     }
+    
     oledBigMessage(0, "Firmware");
     oledBigMessage(1, "download");
     
@@ -410,26 +413,31 @@ esp_https_ota_config_t ota_config = {
     
     if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) {
         // the OTA image was not completely received
-        ESP_LOGE(TAG, "Complete data was not received");
-        goto ota_end;
+        ESP_LOGE(TAG, "Complete firmware data was not received");
+        goto ota_abort;
     } 
     ota_finish_err = esp_https_ota_finish(https_ota_handle);
     if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
+       // Success, firwmware downloaded
         ESP_LOGI(TAG, "Firmware update successful. Rebooting...");
         vTaskDelay(1000 / portTICK_PERIOD_MS);
         esp_restart();
-    } else {
-        if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
+    } 
+    // An error occurred
+    if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
             ESP_LOGE(TAG, "Image validation failed, image is corrupted");
-        }
-        ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
-        ESP_LOGI(TAG, "Firmware NOT updated");
     }
-    return;
+    ESP_LOGE(TAG, "esp_https_ota_finish failed with 0x%x", ota_finish_err);
+    goto ota_error;  // Cannot call esp_https_ota_abort after esp_https_ota_finish
     
-ota_end:
+ota_abort:
     esp_https_ota_abort(https_ota_handle);
+ota_error:
     ESP_LOGI(TAG, "Firmware NOT updated");
+    oledClear();
+    oledBigMessage(0, "DOWNLOAD");
+    oledBigMessage(1, "FW ERROR");
+    vTaskDelay(6000 / portTICK_PERIOD_MS);
     return;
 }
 

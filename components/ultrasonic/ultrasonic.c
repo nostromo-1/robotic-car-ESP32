@@ -82,12 +82,14 @@ esp_err_t ultrasonic_init(const ultrasonic_sensor_t *dev)
 {
     CHECK_ARG(dev);
 
-    ESP_ERROR_CHECK(gpio_reset_pin(dev->trigger_pin));
     ESP_ERROR_CHECK(gpio_reset_pin(dev->echo_pin));
-    ESP_ERROR_CHECK(gpio_set_direction(dev->trigger_pin, GPIO_MODE_OUTPUT));
-    ESP_ERROR_CHECK(gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT));
-    
-    ESP_ERROR_CHECK(gpio_set_level(dev->trigger_pin, 0));
+    ESP_ERROR_CHECK(gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT)); 
+    if (dev->trigger_pin != dev->echo_pin) {
+      ESP_ERROR_CHECK(gpio_reset_pin(dev->trigger_pin));
+      ESP_ERROR_CHECK(gpio_set_direction(dev->trigger_pin, GPIO_MODE_OUTPUT));
+      ESP_ERROR_CHECK(gpio_set_level(dev->trigger_pin, 0));
+    }
+
     ESP_ERROR_CHECK(gpio_isr_handler_add(dev->echo_pin, level_change, NULL));   // Assumes gpio_install_isr_service has already been called
     return ESP_OK;
 }
@@ -97,23 +99,26 @@ esp_err_t ultrasonic_init(const ultrasonic_sensor_t *dev)
 This function triggers the ultrasonic sensor and takes a read of the distance to an obstacle. 
 Other than the original, it checks for glitch conditions.
 And most important, it does not need to stop interrupts, so it does not affect other tasks.
+It also works if the ultrasonic sensor shares a single pin for both trigger and echo signal.
 +*/
 esp_err_t ultrasonic_measure_raw(const ultrasonic_sensor_t *dev, const uint32_t max_time_ms, uint32_t *time_us)
 {
 int64_t start_time;
 
     CHECK_ARG(dev && time_us);
-
-    // Check if previous echo signal isn't ended. Sometimes the echo lasts for ca. 200 ms, dunno why
+      
+    // Check if previous echo signal isn't ended. Sometimes the echo lasts for ca. 180 ms, dunno why
     if (gpio_get_level(dev->echo_pin)) return ESP_ERR_ULTRASONIC_PING;
     callingTask = xTaskGetCurrentTaskHandle();
 
     // Ping: high for 10 us
+    if (dev->trigger_pin == dev->echo_pin) gpio_set_direction(dev->trigger_pin, GPIO_MODE_OUTPUT);
     CHECK(gpio_set_level(dev->trigger_pin, 1));
     ets_delay_us(TRIGGER_HIGH_DELAY);
     CHECK(gpio_set_level(dev->trigger_pin, 0));
 
-    // Wait for echo, takes ca. 600 us to arrive
+    if (dev->trigger_pin == dev->echo_pin) gpio_set_direction(dev->echo_pin, GPIO_MODE_INPUT);
+    // Wait for echo, takes ca. 450 us to arrive
     start_time = esp_timer_get_time();
     do {
       while (!gpio_get_level(dev->echo_pin)) {

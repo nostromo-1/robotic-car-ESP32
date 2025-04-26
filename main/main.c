@@ -71,10 +71,6 @@ This is a ESP32 port of the original Raspberry Pi project.
 #define I2C0_SCL_IO       22          /* GPIO number used for I2C0 master clock */
 #define I2C0_SDA_IO       21          /* GPIO number used for I2C0 master data  */
 
-#define I2C1_SCL_IO       23          /* GPIO number used for I2C1 master clock */
-#define I2C1_SDA_IO       19          /* GPIO number used for I2C1 master data  */
-
-
 #define STACK_SIZE 2048
 
 
@@ -99,6 +95,8 @@ you may consider using an ADC1 GPIO instead (8 channels, attached to GPIOs 32 - 
 Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and Bluetooth with sleep mode enabled.
 */
 
+// 35, 23, 19 free
+
 #define MI_ENA_PIN 26
 #define MI_IN1_PIN 32
 #define MI_IN2_PIN 33
@@ -108,7 +106,8 @@ Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and
 #define MD_IN2_PIN 5
 
 #define SONAR_TRIGGER_PIN 14
-#define SONAR_ECHO_PIN    35
+#define SONAR_ECHO_PIN    14
+//#define SONAR_ECHO_PIN    35
 
 #define PITO_PIN    12  // This pin remains low when deep sleep; others are high, so buzzer would sound
 #define WMSCAN_PIN  15
@@ -117,17 +116,15 @@ Please do not use the interrupt of GPIO36 and GPIO39 when using ADC or Wi-Fi and
 #define LSENSOR_PIN 36
 #define RSENSOR_PIN 39
 #define KARR_PIN    27
-#define MIC_PIN     34  // ADC channel 6 in ESP32
+//#define MIC_PIN     34  // ADC channel 6 in ESP32
 
 /***************** Define constants and parameters ****************/
 #define DISTMIN 45           /* distancia en cm a la que entendemos que hay un obstáculo */
 #define INITIAL_SPEED 50     /* Entre 0 y 100% */
-#define SONARDELAY 50        /* Time in ms between sonar triggers */
+#define SONARDELAY 30        /* Time in ms between sonar triggers */
+#define KARRDELAY 150        /* Time in ms to wait between leds in KARR scan */
 #define NUMPULSES (16*120)   /* Motor assumed is a DFRobot FIT0450 with encoder. 16 pulses per round, 1:120 gearbox */
 #define WHEELD 68            /* Wheel diameter in mm */
-#define KARRDELAY 150        /* Time in ms to wait between leds in KARR scan */
-#define MAX_DISTANCE_CM 300  /* max distance to be measured by sonar */
-
 
 
 /****************** Variables y tipos globales **************************/
@@ -375,17 +372,6 @@ static void i2c_master_init()
    };
 
    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c0_mst_config, &i2c_bus0_handle));
-
-   i2c_master_bus_config_t i2c1_mst_config = {
-    .clk_source = I2C_CLK_SRC_DEFAULT,
-    .i2c_port = I2C_NUM_1,
-    .scl_io_num = I2C1_SCL_IO,
-    .sda_io_num = I2C1_SDA_IO,
-    .glitch_ignore_cnt = 7,
-    .flags.enable_internal_pullup = true,
-   };
-
-   ESP_ERROR_CHECK(i2c_new_master_bus(&i2c1_mst_config, &i2c_bus1_handle));
 }
 
 
@@ -534,7 +520,7 @@ uint32_t voltage, current, battery1;
    vTaskDelay(pdMS_TO_TICKS(500));
    
    // Power supply checker
-   if (setupPCF8591(i2c_bus1_handle, PCF8591_I2C)) return 1;
+   if (setupPCF8591(i2c_bus0_handle, PCF8591_I2C)) return 1;
    readPowerSupply(&voltage, &battery1, &current);
    if (voltage < 2*3000) {
       ESP_LOGE(TAG, "Power supply is too low (%ld mV). Aborting start.", voltage);
@@ -770,6 +756,7 @@ static const char displayText[] = "Dist (cm):";
 bool firstTime = true;
 const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
 
+    oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
     TickType_t xWakeTime = xTaskGetTickCount();
     for (;;) {
         uint32_t measured_distance;  // In cm
@@ -783,7 +770,6 @@ const uint32_t alpha = 20;  // 0-100; confidence in new value of distance
             reference_tick = tick;  // Reference for stalled time calculation
             reference_distance = 10*measured_distance;
             previous_distance = reference_distance;
-            oledWriteString(0, 0, displayText, false);  // Write fixed text to display only once
             continue;
         }
         
@@ -856,7 +842,7 @@ int count = 0, state = 0;
       }
       // Now, send a pulse to the 74HC4017
       gpio_set_level(KARR_PIN, 1);  // Small pulse, 20 ns length is enough
-      gpio_set_level(KARR_PIN, 0);
+      gpio_set_level(KARR_PIN, 0);  // This achieves ca. 240 ns pulse length
       vTaskDelay(pdMS_TO_TICKS(xDelay));
   }
 }
